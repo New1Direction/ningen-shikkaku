@@ -1,0 +1,11 @@
+[package]
+name = "kikka"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+description = "Heartbeat listener + panic controller for dazai"
+
+[dependencies]
+goodnight.workspace = true
+anyhow.workspace = true
+signal-hook.workspace = true

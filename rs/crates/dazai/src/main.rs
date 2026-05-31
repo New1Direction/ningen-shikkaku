@@ -25,9 +25,9 @@ use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 use clap::{Args, Parser, Subcommand, ValueEnum};
-use dazai_child::ChildProcess;
-use dazai_secmem::SecretBuffer;
-use dazai_watchdog::{SharedBuffers, Watchdog, WatchdogConfig};
+use goodnight::SecretBuffer;
+use kikka::{SharedBuffers, Watchdog, WatchdogConfig};
+use sienna::ChildProcess;
 
 #[derive(Parser)]
 #[command(
@@ -102,7 +102,7 @@ fn default_socket_path() -> PathBuf {
     let base = std::env::var_os("XDG_RUNTIME_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("/tmp"));
-    base.join(format!("dazai-{}.sock", dazai_secmem::current_uid()))
+    base.join(format!("dazai-{}.sock", goodnight::current_uid()))
 }
 
 /// Parse a seconds-valued CLI flag into a `Duration` without ever panicking.
@@ -178,7 +178,7 @@ fn run_daemon(args: DaemonArgs) -> Result<()> {
     };
 
     // 1. RLIMIT_MEMLOCK
-    match dazai_secmem::try_raise_memlock_rlimit() {
+    match goodnight::try_raise_memlock_rlimit() {
         Ok(true) => eprintln!("[dazai] RLIMIT_MEMLOCK raised"),
         Ok(false) => {
             eprintln!(
@@ -188,7 +188,7 @@ fn run_daemon(args: DaemonArgs) -> Result<()> {
         Err(e) => eprintln!("[dazai] WARN: RLIMIT_MEMLOCK query failed: {e}"),
     }
     // 2. PR_SET_DUMPABLE
-    match dazai_secmem::set_process_undumpable() {
+    match goodnight::set_process_undumpable() {
         Ok(()) => eprintln!("[dazai] PR_SET_DUMPABLE=0 (core dumps + ptrace disabled)"),
         Err(e) => eprintln!("[dazai] note: core-dump hardening unavailable: {e}"),
     }
@@ -233,7 +233,7 @@ fn run_daemon(args: DaemonArgs) -> Result<()> {
     let listener = watchdog.bind_listener()?;
     write_pidfile(&pidfile)?;
     eprintln!("[dazai] pidfile {}", pidfile.display());
-    dazai_seccomp::apply().context("applying seccomp filter")?;
+    kekkai::apply().context("applying seccomp filter")?;
 
     // 7. event loop (returns on clean shutdown / dry-run completion; armed
     //    triggers SIGKILL the process from within).
@@ -318,7 +318,7 @@ fn run_mcp(args: McpArgs) -> Result<()> {
     match args.transport {
         Transport::Stdio => {
             let rt = tokio::runtime::Runtime::new().context("creating tokio runtime")?;
-            rt.block_on(dazai_mcp::serve_stdio(socket))
+            rt.block_on(rei::serve_stdio(socket))
         }
         Transport::Unix => {
             bail!("--transport unix is not implemented yet; use the default stdio transport")

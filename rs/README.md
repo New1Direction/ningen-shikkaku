@@ -15,7 +15,7 @@ Rust lets it provide guarantees the CPython runtime cannot.
 | Swap | `mlock` best-effort | `mlock` + raise `RLIMIT_MEMLOCK` toward `RLIM_INFINITY` |
 | Syscall surface | full Python interpreter | **seccomp allowlist** (Linux): default `KillProcess`, only the needed syscalls permitted |
 | Signal safety | self-pipe in Python handler | `signal-hook`'s async-signal-safe self-pipe; no work in handler context |
-| Memory safety | n/a (Python) | all `unsafe` confined to one crate (`dazai-secmem`), every block justified; every other crate `#![deny(unsafe_code)]` |
+| Memory safety | n/a (Python) | all `unsafe` confined to one crate (`goodnight`), every block justified; every other crate `#![deny(unsafe_code)]` |
 
 **The CPython residue limitation is eliminated** for the buffers `dazai` owns:
 secrets live only inside the locked, non-dumpable, explicitly-wiped mapping.
@@ -23,15 +23,15 @@ secrets live only inside the locked, non-dumpable, explicitly-wiped mapping.
 ## Crates
 
 ```
-dazai-secmem    SecretBuffer (mmap+mlock+madvise+wipe+Drop). The ONLY unsafe crate.
-dazai-watchdog  PanicController (policy) + Watchdog (socket listener, signal thread,
-                per-connection reader threads, event loop). unsafe-free.
-dazai-child     LLM child wrapper: parent spawns (fork+exec via Command), owns the PID,
-                kills the child on any trigger before self-destruct. unsafe-free.
-dazai-seccomp   Linux seccomp allowlist (feature `seccomp`); no-op stub elsewhere.
-dazai-mcp       MCP server (rmcp) exposing the daemon as tools any agent can use.
-dazai-oneshot   Self-immolating MCP server: serve N tool calls, then wipe + exit.
-dazai           CLI binary: `daemon`, `client`, and `mcp` subcommands.
+goodnight   SecretBuffer (mmap+mlock+madvise+wipe+Drop). The ONLY unsafe crate.
+kikka       PanicController (policy) + Watchdog (socket listener, signal thread,
+            per-connection reader threads, event loop). unsafe-free.
+sienna      LLM child wrapper: parent spawns (fork+exec via Command), owns the PID,
+            kills the child on any trigger before self-destruct. unsafe-free.
+kekkai      Linux seccomp allowlist (feature `seccomp`); no-op stub elsewhere.
+rei         MCP server (rmcp) exposing the daemon as tools any agent can use.
+motokano    Self-immolating MCP server: serve N tool calls, then wipe + exit.
+dazai       CLI binary: `daemon`, `client`, and `mcp` subcommands.
 ```
 
 ## Usage
@@ -143,11 +143,11 @@ dazai mcp
 #   - dazai_status() from the MCP server now returns { alive: false }
 ```
 
-## dazai-oneshot — a self-immolating MCP server
+## motokano — a self-immolating MCP server
 
 A standalone MCP server that serves a configurable number of tool calls, then
 wipes its in-memory secret state and exits. It adds no new mechanism: static
-tool values are held in `dazai_secmem::SecretBuffer`s, and the optional daemon
+tool values are held in `goodnight::SecretBuffer`s, and the optional daemon
 integration reuses the dazai control protocol. `#![deny(unsafe_code)]`.
 
 ### Three death conditions (whichever fires first)
@@ -180,12 +180,12 @@ is the only thing executed, so a caller cannot inject anything.
 ### Run it
 
 ```bash
-dazai-oneshot --calls 1 --tool 'name=get_key,kind=static,value=s3cr3t' --arm
+motokano --calls 1 --tool 'name=get_key,kind=static,value=s3cr3t' --arm
 # an MCP client calls get_key once -> receives 's3cr3t' -> the server wipes + SIGKILLs itself
 # a second call -> the process is gone (connection closed)
 
 # tie a tool server's lifetime to a dazai daemon:
-dazai-oneshot --session --dazai-socket "$XDG_RUNTIME_DIR/dazai-$UID.sock" \
+motokano --session --dazai-socket "$XDG_RUNTIME_DIR/dazai-$UID.sock" \
   --tool 'name=key,kind=static,value=...'
 ```
 
@@ -223,7 +223,7 @@ reap), `statx`/`unlinkat` (socket teardown), … — without these the process
 `execve`, `open`/`openat`, `connect`, `ptrace`, `mount`, `setns`, etc. — these
 fire only *before* the filter is applied (own exec, glibc startup, the
 pre-seccomp child spawn), so the steady-state daemon cannot open files or exec.
-(See `dazai_seccomp::conceptual_allowlist`.)
+(See `kekkai::conceptual_allowlist`.)
 
 ## Portability
 
@@ -243,14 +243,14 @@ cargo clippy --all-targets -- -D warnings
 cargo fmt --check
 ```
 
-- `dazai-secmem`: alloc/write/read/wipe/Drop cycle, double-wipe safety,
+- `goodnight`: alloc/write/read/wipe/Drop cycle, double-wipe safety,
   move-only, no escaping pointer, `mlock` success.
-- `dazai-watchdog`: full `PanicController` policy (dry-run never kills; armed
+- `kikka`: full `PanicController` policy (dry-run never kills; armed
   grace fires only after the deadline; reconnect cancels; hard bypasses grace;
   one-shot guard; **registered → wipe → self ordering**) — all via injected fakes.
-- `dazai-child`: spawn/pid/kill/Drop.
-- `dazai-seccomp`: allowlist contents and dangerous-syscall omission.
-- `dazai-mcp`: client logic against a **mock daemon** (status/register/unregister/
+- `sienna`: spawn/pid/kill/Drop.
+- `kekkai`: allowlist contents and dangerous-syscall omission.
+- `rei`: client logic against a **mock daemon** (status/register/unregister/
   arm), and panic/hard-panic against an **injected fake signal sender** — no live
   daemon needed.
 - `dazai` integration: connection-drop / `SIGUSR1` / `SIGUSR2` / ping-timeout

@@ -1,13 +1,13 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/dazai-secmem",
-    "crates/dazai-watchdog",
-    "crates/dazai-child",
-    "crates/dazai-seccomp",
-    "crates/dazai-mcp",
-    "crates/dazai-oneshot",
     "crates/dazai",
+    "crates/goodnight",
+    "crates/kikka",
+    "crates/kekkai",
+    "crates/sienna",
+    "crates/rei",
+    "crates/motokano",
 ]
 
 [workspace.package]
@@ -27,11 +27,11 @@ schemars = "1"
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "net", "io-util", "time", "process"] }
 
 # Internal crates
-dazai-secmem = { path = "crates/dazai-secmem" }
-dazai-watchdog = { path = "crates/dazai-watchdog" }
-dazai-child = { path = "crates/dazai-child" }
-dazai-seccomp = { path = "crates/dazai-seccomp" }
-dazai-mcp = { path = "crates/dazai-mcp" }
+goodnight = { path = "crates/goodnight" }
+kikka = { path = "crates/kikka" }
+sienna = { path = "crates/sienna" }
+kekkai = { path = "crates/kekkai" }
+rei = { path = "crates/rei" }
 
 [profile.release]
 panic = "abort"

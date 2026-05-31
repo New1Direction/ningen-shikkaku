@@ -220,71 +220,13 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
- "dazai-child",
- "dazai-mcp",
- "dazai-seccomp",
- "dazai-secmem",
- "dazai-watchdog",
+ "goodnight",
+ "kekkai",
+ "kikka",
+ "rei",
+ "sienna",
  "signal-hook",
  "tokio",
-]
-
-[[package]]
-name = "dazai-child"
-version = "0.1.0"
-dependencies = [
- "anyhow",
-]
-
-[[package]]
-name = "dazai-mcp"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "dazai-secmem",
- "rmcp",
- "schemars",
- "serde",
- "signal-hook",
- "tokio",
-]
-
-[[package]]
-name = "dazai-oneshot"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "dazai-secmem",
- "rmcp",
- "schemars",
- "serde",
- "serde_json",
- "tokio",
-]
-
-[[package]]
-name = "dazai-seccomp"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "libseccomp",
-]
-
-[[package]]
-name = "dazai-secmem"
-version = "0.1.0"
-dependencies = [
- "libc",
-]
-
-[[package]]
-name = "dazai-watchdog"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "dazai-secmem",
- "signal-hook",
 ]
 
 [[package]]
@@ -404,6 +346,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "goodnight"
+version = "0.1.0"
+dependencies = [
+ "libc",
+]
+
+[[package]]
 name = "heck"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -464,6 +413,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "kekkai"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "libseccomp",
+]
+
+[[package]]
+name = "kikka"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "goodnight",
+ "signal-hook",
+]
+
+[[package]]
 name = "libc"
 version = "0.2.186"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -508,6 +474,20 @@ dependencies = [
  "libc",
  "wasi",
  "windows-sys",
+]
+
+[[package]]
+name = "motokano"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "goodnight",
+ "rmcp",
+ "schemars",
+ "serde",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]
@@ -585,6 +565,19 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
+]
+
+[[package]]
+name = "rei"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "goodnight",
+ "rmcp",
+ "schemars",
+ "serde",
+ "signal-hook",
+ "tokio",
 ]
 
 [[package]]
@@ -712,6 +705,13 @@ name = "shlex"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
+
+[[package]]
+name = "sienna"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+]
 
 [[package]]
 name = "signal-hook"

@@ -31,7 +31,7 @@ It ships in two layers:
 | `dazai daemon` | The watchdog: holds `mlock`'d secrets + a UNIX-socket heartbeat; wipes and self-destructs on session loss. seccomp-confined on Linux. |
 | `dazai client` | The heartbeat client — ties the daemon's life to a shell / SSH session. |
 | `dazai mcp` | An MCP server exposing the daemon as tools, so any agent can register its PID for session-bound protection (it gets `SIGKILL`ed if your session dies). |
-| `dazai-oneshot` | A standalone **self-immolating** MCP server: serve N tool calls, then wipe secret state and exit. |
+| `motokano` | A standalone **self-immolating** MCP server: serve N tool calls, then wipe secret state and exit. |
 | Python reference | `secmem.py` / `deadman.py` / `heartbeat.py` / `shellrc.sh` — the portable proof-of-concept. |
 
 ## Install
@@ -42,7 +42,7 @@ to build the seccomp-confined daemon.
 ```bash
 git clone https://github.com/New1Direction/ningen-shikkaku
 cd ningen-shikkaku/rs
-cargo build --release                       # -> target/release/{dazai, dazai-oneshot}
+cargo build --release                       # -> target/release/{dazai, motokano}
 cargo build --release --features seccomp    # Linux: with the seccomp allowlist
 ```
 
@@ -51,7 +51,7 @@ cargo build --release --features seccomp    # Linux: with the seccomp allowlist
 A self-destructing one-shot secret server, in one line:
 
 ```bash
-dazai-oneshot --calls 1 \
+motokano --calls 1 \
   --tool 'name=get_key,kind=static,value=s3cr3t' \
   --arm
 ```
@@ -91,7 +91,7 @@ this):
 - **GPU VRAM.** If an attached LLM/agent copies a secret into GPU memory,
   killing the host process does not wipe VRAM. daZai controls host RAM and the
   processes it supervises — not an accelerator's memory.
-- **`exec`-tool stdout.** `dazai-oneshot`'s `kind=exec` tools return a command's
+- **`exec`-tool stdout.** `motokano`'s `kind=exec` tools return a command's
   stdout, which is OS-buffered and **not** held in a locked buffer. Use
   `kind=static` (a pre-loaded, locked, wipeable value) when you need the wipe
   guarantee.

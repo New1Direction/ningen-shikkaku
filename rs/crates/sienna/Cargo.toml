@@ -1,0 +1,9 @@
+[package]
+name = "sienna"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+description = "LLM child-process wrapper for dazai (parent-owns-kill-switch)"
+
+[dependencies]
+anyhow.workspace = true
