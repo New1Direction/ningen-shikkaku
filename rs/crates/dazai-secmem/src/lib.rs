@@ -71,6 +71,45 @@ pub fn current_uid() -> u32 {
     unsafe { libc::getuid() }
 }
 
+/// Whether a process with PID `pid` currently exists.
+///
+/// Uses `kill(pid, 0)` — portable on Linux and macOS: a `0` return, or `EPERM`,
+/// means the process exists. Rejects pid 0 and values that would not fit a
+/// positive `pid_t`, since those select a process *group* or every process
+/// rather than one process.
+pub fn pid_exists(pid: u32) -> bool {
+    if pid == 0 || pid > i32::MAX as u32 {
+        return false;
+    }
+    // SAFETY: `kill` with signal 0 performs only an existence/permission check;
+    // it delivers no signal and touches no memory we own. `pid` is a validated
+    // positive value within `pid_t` range.
+    let rc = unsafe { libc::kill(pid as libc::pid_t, 0) };
+    if rc == 0 {
+        return true;
+    }
+    // EPERM => the process exists but we lack permission to signal it.
+    std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+}
+
+/// Send signal `signum` to PID `pid`. Returns whether it was delivered.
+///
+/// Rejects pid 0 and out-of-`pid_t`-range values so a wrapped or zero value can
+/// never target a process group or every process.
+pub fn send_signal(pid: u32, signum: i32) -> bool {
+    if pid == 0 || pid > i32::MAX as u32 {
+        return false;
+    }
+    // SAFETY: `kill(pid, signum)` for a validated single positive pid; it
+    // touches no memory we own.
+    unsafe { libc::kill(pid as libc::pid_t, signum) == 0 }
+}
+
+/// Send `SIGKILL` to PID `pid`. Returns whether the signal was delivered.
+pub fn sigkill_pid(pid: u32) -> bool {
+    send_signal(pid, libc::SIGKILL)
+}
+
 /// Query the system page size, falling back to 4 KiB.
 fn page_size() -> usize {
     // SAFETY: `sysconf` is a pure query with no memory arguments.

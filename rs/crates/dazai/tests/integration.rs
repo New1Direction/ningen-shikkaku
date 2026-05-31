@@ -96,6 +96,111 @@ fn reap(child: &mut Child) {
     }
 }
 
+/// One-shot control request: connect, send `msg\n`, return the reply.
+fn control_req(sock: &Path, msg: &str) -> String {
+    let mut s = connect(sock);
+    s.write_all(msg.as_bytes()).unwrap();
+    s.write_all(b"\n").unwrap();
+    recv(&mut s)
+}
+
+fn spawn_victim() -> Child {
+    Command::new("/bin/sleep")
+        .arg("60")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn victim sleep")
+}
+
+#[test]
+fn register_status_unregister_protocol() {
+    let sock = unique_socket();
+    let mut daemon = spawn_daemon(&sock, &[]); // dry-run: never actually kills
+    assert!(wait_for_socket(&sock));
+    let mut victim = spawn_victim();
+    let vpid = victim.id();
+
+    assert!(control_req(&sock, "STATUS").contains("registered=0"));
+    assert!(control_req(&sock, "REGISTER pid=0").contains("ERROR")); // invalid
+    assert!(control_req(&sock, &format!("REGISTER pid={vpid}")).contains("OK"));
+    assert!(control_req(&sock, "STATUS").contains("registered=1"));
+    assert!(control_req(&sock, &format!("REGISTER pid={vpid}")).contains("OK")); // idempotent
+    assert!(control_req(&sock, "STATUS").contains("registered=1"));
+    assert!(control_req(&sock, &format!("UNREGISTER pid={vpid}")).contains("OK"));
+    assert!(control_req(&sock, "STATUS").contains("registered=0"));
+
+    let _ = victim.kill();
+    let _ = victim.wait();
+    reap(&mut daemon);
+    let _ = std::fs::remove_file(&sock);
+}
+
+#[test]
+fn control_connection_coexists_with_heartbeat() {
+    let sock = unique_socket();
+    let mut daemon = spawn_daemon(&sock, &[]);
+    assert!(wait_for_socket(&sock));
+    // Heartbeat holds the single-client slot.
+    let mut hb = connect(&sock);
+    hb.write_all(b"HELLO 1\n").unwrap();
+    assert!(recv(&mut hb).contains("WELCOME"));
+    // A control connection is NOT refused while the heartbeat is held.
+    assert!(control_req(&sock, "STATUS").contains("alive=1"));
+    // But a second heartbeat IS refused.
+    let mut hb2 = connect(&sock);
+    hb2.write_all(b"HELLO 2\n").unwrap();
+    assert!(recv(&mut hb2).contains("BUSY"));
+    drop(hb);
+    drop(hb2);
+    reap(&mut daemon);
+    let _ = std::fs::remove_file(&sock);
+}
+
+#[test]
+fn runtime_arm_via_control() {
+    let sock = unique_socket();
+    let mut daemon = spawn_daemon(&sock, &[]); // starts in dry-run
+    assert!(wait_for_socket(&sock));
+    assert!(control_req(&sock, "STATUS").contains("armed=0"));
+    assert!(control_req(&sock, "ARM").contains("OK"));
+    assert!(control_req(&sock, "STATUS").contains("armed=1"));
+    assert!(control_req(&sock, "ARM").contains("ALREADY_ARMED"));
+    // No heartbeat connected, so nothing triggers; just reap it.
+    reap(&mut daemon);
+    let _ = std::fs::remove_file(&sock);
+}
+
+#[test]
+fn registered_pid_is_sigkilled_on_armed_trigger() {
+    let sock = unique_socket();
+    let mut victim = spawn_victim();
+    let vpid = victim.id();
+    let mut daemon = spawn_daemon(&sock, &["--arm", "--grace", "1"]);
+    assert!(wait_for_socket(&sock));
+    assert!(control_req(&sock, &format!("REGISTER pid={vpid}")).contains("OK"));
+
+    // Heartbeat, then drop -> 1s grace -> SIGKILL registered victim + self.
+    let mut hb = connect(&sock);
+    hb.write_all(b"HELLO 1\n").unwrap();
+    let _ = recv(&mut hb);
+    drop(hb);
+
+    let dstatus = daemon.wait().unwrap();
+    assert_eq!(
+        dstatus.signal(),
+        Some(9),
+        "armed daemon should self-SIGKILL"
+    );
+    let vstatus = victim.wait().unwrap();
+    assert_eq!(
+        vstatus.signal(),
+        Some(9),
+        "registered victim must be SIGKILLed before the daemon dies"
+    );
+    let _ = std::fs::remove_file(&sock);
+}
+
 #[test]
 fn protocol_then_connection_drop_triggers_dryrun_exit() {
     let sock = unique_socket();

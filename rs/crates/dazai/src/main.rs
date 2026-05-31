@@ -15,15 +15,16 @@
 
 use std::cell::RefCell;
 use std::io::{Read, Write};
+use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixStream;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::rc::Rc;
 use std::thread;
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 use dazai_child::ChildProcess;
 use dazai_secmem::SecretBuffer;
 use dazai_watchdog::{SharedBuffers, Watchdog, WatchdogConfig};
@@ -45,6 +46,24 @@ enum Cmd {
     Daemon(DaemonArgs),
     /// Run the heartbeat client (holds the liveness connection open).
     Client(ClientArgs),
+    /// Run the MCP server exposing dazai as tools for any MCP client.
+    Mcp(McpArgs),
+}
+
+#[derive(Args)]
+struct McpArgs {
+    /// Daemon UNIX socket to relay to (default: ${XDG_RUNTIME_DIR:-/tmp}/dazai-$UID.sock).
+    #[arg(long)]
+    socket: Option<PathBuf>,
+    /// MCP transport (stdio is the standard).
+    #[arg(long, value_enum, default_value_t = Transport::Stdio)]
+    transport: Transport,
+}
+
+#[derive(Clone, ValueEnum)]
+enum Transport {
+    Stdio,
+    Unix,
 }
 
 #[derive(Args)]
@@ -95,6 +114,23 @@ fn duration_secs(flag: &str, secs: f64) -> Result<Duration> {
     Duration::try_from_secs_f64(secs).map_err(|e| {
         anyhow::anyhow!("{flag} must be a finite, non-negative number of seconds ({e})")
     })
+}
+
+/// Pidfile path paired with the socket (`<socket>.pid`); the MCP server reads
+/// it to find the daemon process for `dazai_panic`/`dazai_hard_panic`.
+fn pidfile_for(socket: &Path) -> PathBuf {
+    socket.with_extension("pid")
+}
+
+/// Write this process's PID to `path` (mode 0600). Done before seccomp, since
+/// creating a file needs `openat`, which the filter denies.
+fn write_pidfile(path: &Path) -> Result<()> {
+    let mut f = std::fs::File::create(path)
+        .with_context(|| format!("creating pidfile {}", path.display()))?;
+    writeln!(f, "{}", std::process::id()).context("writing pidfile")?;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+        .with_context(|| format!("chmod 0600 {}", path.display()))?;
+    Ok(())
 }
 
 /// Loud notice on non-Linux about which hardening guarantees are absent.
@@ -167,15 +203,22 @@ fn run_daemon(args: DaemonArgs) -> Result<()> {
         None => ChildProcess::none(),
     }));
 
-    // 5. injected lethal action: kill child, then SIGKILL self.
+    let socket_path = args.socket.unwrap_or_else(default_socket_path);
+    let pidfile = pidfile_for(&socket_path);
+
+    // 5. injected lethal action: kill child, remove the pidfile (so a later
+    //    panic can't signal our recycled PID), then SIGKILL self. raise(SIGKILL)
+    //    never returns, so the normal cleanup at the end of run() is skipped on
+    //    this path — hence the explicit pidfile removal here.
     let child_for_kill = Rc::clone(&child);
+    let pidfile_for_kill = pidfile.clone();
     let kill = Box::new(move || {
         child_for_kill.borrow_mut().kill();
+        let _ = std::fs::remove_file(&pidfile_for_kill);
         eprintln!("[dazai] raising SIGKILL on self");
         let _ = signal_hook::low_level::raise(signal_hook::consts::SIGKILL);
     }) as Box<dyn FnMut()>;
 
-    let socket_path = args.socket.unwrap_or_else(default_socket_path);
     let config = WatchdogConfig {
         socket_path,
         armed: args.arm,
@@ -185,16 +228,19 @@ fn run_daemon(args: DaemonArgs) -> Result<()> {
 
     let mut watchdog = Watchdog::new(config, Rc::clone(&buffers), kill);
 
-    // 6. bind, then apply seccomp BEFORE the accept loop.
+    // 6. bind, write the pidfile (before seccomp — file creation needs openat),
+    //    then apply seccomp BEFORE the accept loop.
     let listener = watchdog.bind_listener()?;
+    write_pidfile(&pidfile)?;
+    eprintln!("[dazai] pidfile {}", pidfile.display());
     dazai_seccomp::apply().context("applying seccomp filter")?;
 
     // 7. event loop (returns on clean shutdown / dry-run completion; armed
     //    triggers SIGKILL the process from within).
     watchdog.run_with_listener(listener)?;
 
-    // Clean shutdown: dropping `child` (last Rc) kills it; dropping `buffers`
-    // wipes + munmaps.
+    // Clean shutdown: remove the pidfile, then drop child (kills it) + buffers.
+    let _ = std::fs::remove_file(&pidfile);
     drop(watchdog);
     drop(child);
     drop(buffers);
@@ -266,11 +312,26 @@ fn run_client(args: ClientArgs) -> Result<()> {
     Ok(())
 }
 
+/// Run the MCP server, relaying tool calls to the daemon socket.
+fn run_mcp(args: McpArgs) -> Result<()> {
+    let socket = args.socket.unwrap_or_else(default_socket_path);
+    match args.transport {
+        Transport::Stdio => {
+            let rt = tokio::runtime::Runtime::new().context("creating tokio runtime")?;
+            rt.block_on(dazai_mcp::serve_stdio(socket))
+        }
+        Transport::Unix => {
+            bail!("--transport unix is not implemented yet; use the default stdio transport")
+        }
+    }
+}
+
 fn main() -> ExitCode {
     let cli = Cli::parse();
     let result = match cli.cmd {
         Cmd::Daemon(args) => run_daemon(args),
         Cmd::Client(args) => run_client(args),
+        Cmd::Mcp(args) => run_mcp(args),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,

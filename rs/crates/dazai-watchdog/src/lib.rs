@@ -22,9 +22,9 @@ use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError, Sender};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -36,6 +36,18 @@ use signal_hook::iterator::Signals;
 /// Largest line accepted from a client before it is treated as a protocol
 /// violation, bounding memory against a peer that never sends a newline.
 const MAX_LINE: usize = 8192;
+
+/// Maximum number of PIDs that may be registered for SIGKILL-on-trigger.
+const MAX_REGISTERED: usize = 32;
+
+/// Maximum number of concurrent control connections (bounds reader threads
+/// against a same-UID local flood).
+const MAX_CONTROL: usize = 16;
+
+/// Registered PIDs, shared between control handlers and the kill path.
+/// PIDs are not sensitive, so a plain `Vec<u32>` (behind a `Mutex`) — no
+/// `SecretBuffer`.
+pub type RegisteredPids = Arc<Mutex<Vec<u32>>>;
 
 /// Secret buffers shared between the host and the wipe closure. Lives on the
 /// main thread only (`Rc`), so it is never sent across threads.
@@ -77,12 +89,26 @@ pub struct WatchdogConfig {
     pub ping_timeout: Option<Duration>,
 }
 
+/// Per-connection context handed to control-connection handlers (clone-cheap).
+#[derive(Clone)]
+struct ConnCtx {
+    registered: RegisteredPids,
+    armed: Arc<AtomicBool>,
+    grace: Duration,
+    /// In-flight control connections, to bound concurrent reader threads.
+    control_count: Arc<AtomicUsize>,
+}
+
 /// The watchdog: owns the socket, the secret buffers, and the panic controller.
 pub struct Watchdog {
     config: WatchdogConfig,
     buffers: SharedBuffers,
     controller: PanicController,
     stop: Arc<AtomicBool>,
+    /// Runtime-mutable arm flag, shared with the controller and `ARM` handler.
+    armed: Arc<AtomicBool>,
+    /// PIDs registered for SIGKILL-on-trigger, shared with control handlers.
+    registered: RegisteredPids,
 }
 
 impl Watchdog {
@@ -94,6 +120,23 @@ impl Watchdog {
     /// internal stop flag so the loop exits cleanly in dry-run mode.
     pub fn new(config: WatchdogConfig, buffers: SharedBuffers, kill: Box<dyn FnMut()>) -> Self {
         let stop = Arc::new(AtomicBool::new(false));
+        let armed = Arc::new(AtomicBool::new(config.armed));
+        let registered: RegisteredPids = Arc::new(Mutex::new(Vec::new()));
+
+        // kill_registered: SIGKILL every registered PID. Runs first on an armed
+        // trigger, before the buffer wipe. Reads the list the control handlers
+        // maintain; recovers a poisoned lock rather than panicking.
+        let reg_kill = Arc::clone(&registered);
+        let kill_registered = Box::new(move || {
+            let pids = reg_kill.lock().unwrap_or_else(|p| p.into_inner());
+            for &pid in pids.iter() {
+                let killed = dazai_secmem::sigkill_pid(pid);
+                eprintln!(
+                    "[dazai] SIGKILL registered pid {pid}: {}",
+                    if killed { "sent" } else { "already gone" }
+                );
+            }
+        }) as Box<dyn FnMut()>;
 
         let wipe_bufs = Rc::clone(&buffers);
         let wipe = Box::new(move || {
@@ -111,14 +154,24 @@ impl Watchdog {
         let clock = Box::new(Instant::now) as Box<dyn Fn() -> Instant>;
         let log = Box::new(|m: &str| eprintln!("[dazai] {m}")) as Box<dyn Fn(&str)>;
 
-        let controller =
-            PanicController::new(config.armed, config.grace, wipe, kill, dry_done, clock, log);
+        let controller = PanicController::new(
+            Arc::clone(&armed),
+            config.grace,
+            kill_registered,
+            wipe,
+            kill,
+            dry_done,
+            clock,
+            log,
+        );
 
         Watchdog {
             config,
             buffers,
             controller,
             stop,
+            armed,
+            registered,
         }
     }
 
@@ -193,6 +246,12 @@ impl Watchdog {
         let gen_source = Arc::new(AtomicU64::new(0));
         let ping = self.config.ping_timeout;
         let acc_tx = tx.clone();
+        let ctx = ConnCtx {
+            registered: Arc::clone(&self.registered),
+            armed: Arc::clone(&self.armed),
+            grace: self.config.grace,
+            control_count: Arc::new(AtomicUsize::new(0)),
+        };
         thread::spawn(move || {
             for conn in listener.incoming() {
                 match conn {
@@ -200,7 +259,10 @@ impl Watchdog {
                         let tx = acc_tx.clone();
                         let active = Arc::clone(&active);
                         let gen_source = Arc::clone(&gen_source);
-                        thread::spawn(move || handle_conn(stream, active, gen_source, tx, ping));
+                        let ctx = ctx.clone();
+                        thread::spawn(move || {
+                            handle_conn(stream, active, gen_source, tx, ping, ctx)
+                        });
                     }
                     Err(_) => break,
                 }
@@ -302,53 +364,104 @@ fn read_byte<R: Read>(reader: &mut R) -> std::io::Result<Option<u8>> {
     }
 }
 
-/// Per-connection handler. Enforces the single-client policy via `active`,
-/// translates protocol verbs, and emits generation-tagged liveness events.
-///
-/// The ping deadline is enforced per *complete line*, not per read: the OS read
-/// timeout is only a small polling granularity, while an absolute `deadline`
-/// (reset on each full line) decides a missed ping. This stops a byte-trickle
-/// client from indefinitely deferring the deadline by sending one byte at a
-/// time without ever completing a `PING`.
+/// Read one bounded, newline-terminated line into `buf` (without the newline).
+/// `Ok(true)` => a line was read; `Ok(false)` => clean EOF with nothing
+/// buffered; `Err` => timeout, I/O error, or an over-long line.
+fn read_line_bounded<R: Read>(reader: &mut R, buf: &mut Vec<u8>) -> std::io::Result<bool> {
+    buf.clear();
+    loop {
+        match read_byte(reader)? {
+            None => return Ok(!buf.is_empty()),
+            Some(b'\n') => return Ok(true),
+            Some(byte) => {
+                buf.push(byte);
+                if buf.len() >= MAX_LINE {
+                    return Err(std::io::Error::new(ErrorKind::InvalidData, "line too long"));
+                }
+            }
+        }
+    }
+}
+
+/// The uppercased first whitespace-delimited word of a line.
+fn first_word_upper(line: &[u8]) -> String {
+    String::from_utf8_lossy(line)
+        .split_whitespace()
+        .next()
+        .unwrap_or("")
+        .to_ascii_uppercase()
+}
+
+/// Parse a `pid=<N>` token from a line, if present.
+fn parse_pid(line: &[u8]) -> Option<u32> {
+    String::from_utf8_lossy(line)
+        .split_whitespace()
+        .find_map(|tok| tok.strip_prefix("pid=").and_then(|v| v.parse::<u32>().ok()))
+}
+
+/// Per-connection dispatcher. The first verb decides the connection's role:
+/// `HELLO` => a heartbeat client (single-client lock + liveness/grace);
+/// anything else => a control connection (REGISTER / UNREGISTER / ARM / STATUS),
+/// which is request/response and never touches the heartbeat lock or liveness.
 fn handle_conn(
     stream: UnixStream,
     active: Arc<AtomicBool>,
     gen_source: Arc<AtomicU64>,
     tx: Sender<Event>,
     ping: Option<Duration>,
+    ctx: ConnCtx,
 ) {
-    // Single-client policy: if a heartbeat is already held, refuse this one.
+    // Bound the handshake so a silent connection cannot pin a thread forever.
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
+    let write_half = match stream.try_clone() {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+    let mut reader = BufReader::new(stream);
+    let mut line: Vec<u8> = Vec::with_capacity(64);
+    match read_line_bounded(&mut reader, &mut line) {
+        Ok(true) => {}
+        _ => return, // EOF / timeout / over-long before any verb
+    }
+
+    if first_word_upper(&line) == "HELLO" {
+        handle_heartbeat(reader, write_half, active, gen_source, tx, ping);
+    } else {
+        handle_control(line, reader, write_half, ctx);
+    }
+}
+
+/// Heartbeat-client handler (entered after `HELLO`). Enforces the single-client
+/// lock, emits generation-tagged liveness events, and enforces the ping
+/// deadline per *complete line* (not per read) so a byte-trickle client cannot
+/// defer it indefinitely.
+fn handle_heartbeat(
+    mut reader: BufReader<UnixStream>,
+    mut write_half: UnixStream,
+    active: Arc<AtomicBool>,
+    gen_source: Arc<AtomicU64>,
+    tx: Sender<Event>,
+    ping: Option<Duration>,
+) {
+    // Single-client policy: refuse a second heartbeat.
     if active.swap(true, Ordering::SeqCst) {
-        let mut s = stream;
-        let _ = s.write_all(b"BUSY\n");
-        // We never owned the slot; leave `active` set (it belongs to the real
-        // client) and just drop this connection.
+        let _ = write_half.write_all(b"BUSY\n");
         return;
     }
-    // We own the slot. Take a generation id and announce the connection.
     let generation = gen_source.fetch_add(1, Ordering::SeqCst) + 1;
     let _ = tx.send(Event::Connected(generation));
+    let _ = write_half.write_all(b"WELCOME\n");
 
     // Small poll granularity so the absolute deadline is re-checked promptly;
     // None => block on reads (only a connection drop can trigger).
     let poll = ping.map(|t| t.min(Duration::from_millis(200)));
-    let _ = stream.set_read_timeout(poll);
+    let _ = reader.get_ref().set_read_timeout(poll);
     let mut deadline = ping.map(|t| Instant::now() + t);
-
-    let mut write_half = match stream.try_clone() {
-        Ok(s) => s,
-        Err(_) => {
-            active.store(false, Ordering::SeqCst);
-            let _ = tx.send(Event::HeartbeatLost(generation));
-            return;
-        }
-    };
-    let mut reader = BufReader::new(stream);
     let mut line: Vec<u8> = Vec::with_capacity(64);
 
     // Clear `active` BEFORE emitting a terminal event so a fast reconnect is not
-    // spuriously refused with BUSY. The generation id (not the clear order)
-    // protects the loop against the resulting event reorder.
+    // spuriously refused; the generation id (not the clear order) protects the
+    // main loop against the resulting event reorder.
     loop {
         if let Some(dl) = deadline {
             if Instant::now() >= dl {
@@ -364,13 +477,7 @@ fn handle_conn(
                 return;
             }
             Ok(Some(b'\n')) => {
-                let text = String::from_utf8_lossy(&line);
-                let verb = text
-                    .split_whitespace()
-                    .next()
-                    .unwrap_or("")
-                    .to_ascii_uppercase();
-                match verb.as_str() {
+                match first_word_upper(&line).as_str() {
                     "HELLO" => {
                         let _ = write_half.write_all(b"WELCOME\n");
                     }
@@ -393,25 +500,143 @@ fn handle_conn(
                     }
                 }
                 line.clear();
-                // A complete line satisfies the ping deadline; reset it.
                 deadline = ping.map(|t| Instant::now() + t);
             }
             Ok(Some(byte)) => {
                 line.push(byte);
                 if line.len() >= MAX_LINE {
-                    // Protocol violation (no newline within the cap): drop it.
                     active.store(false, Ordering::SeqCst);
                     let _ = tx.send(Event::HeartbeatLost(generation));
                     return;
                 }
             }
-            // Poll tick with no byte: loop and let the deadline check decide.
             Err(e) if e.kind() == ErrorKind::WouldBlock || e.kind() == ErrorKind::TimedOut => {}
             Err(_) => {
                 active.store(false, Ordering::SeqCst);
                 let _ = tx.send(Event::HeartbeatLost(generation));
                 return;
             }
+        }
+    }
+}
+
+/// Decrements the control-connection counter when a handler exits.
+struct ControlGuard(Arc<AtomicUsize>);
+impl Drop for ControlGuard {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// Control-connection handler: REGISTER / UNREGISTER / ARM / STATUS (+ PING),
+/// request/response, looping until the client disconnects. Never affects the
+/// heartbeat lock or liveness.
+fn handle_control(
+    first_line: Vec<u8>,
+    mut reader: BufReader<UnixStream>,
+    mut write_half: UnixStream,
+    ctx: ConnCtx,
+) {
+    // Bound concurrent control connections (and their reader threads).
+    let in_flight = ctx.control_count.fetch_add(1, Ordering::SeqCst);
+    let _guard = ControlGuard(Arc::clone(&ctx.control_count));
+    if in_flight >= MAX_CONTROL {
+        let _ = write_half.write_all(b"BUSY\n");
+        return;
+    }
+    // The 10s deadline bounded the handshake only; clear it so a persistent
+    // control connection is not dropped after 10s idle (reads now block until
+    // the next request or EOF).
+    let _ = reader.get_ref().set_read_timeout(None);
+
+    let mut line = first_line;
+    loop {
+        if !process_control(&line, &mut write_half, &ctx) {
+            return; // QUIT
+        }
+        line.clear();
+        match read_line_bounded(&mut reader, &mut line) {
+            Ok(true) => {}
+            _ => return,
+        }
+    }
+}
+
+/// Handle one control verb. Returns whether the connection should stay open.
+fn process_control(line: &[u8], out: &mut UnixStream, ctx: &ConnCtx) -> bool {
+    match first_word_upper(line).as_str() {
+        "REGISTER" => {
+            // Compute the reply under the lock, then DROP the guard before
+            // writing — never hold the registered-PID mutex across a blocking
+            // socket write, or a stalled client could defer the kill path.
+            let reply: &[u8] = match parse_pid(line) {
+                // pid_exists rejects pid 0 / out-of-range, covering "> 0, exists".
+                Some(pid) if dazai_secmem::pid_exists(pid) => {
+                    let mut reg = ctx.registered.lock().unwrap_or_else(|p| p.into_inner());
+                    if reg.contains(&pid) {
+                        b"OK\n" // idempotent
+                    } else if reg.len() >= MAX_REGISTERED {
+                        b"BUSY\n"
+                    } else {
+                        reg.push(pid);
+                        eprintln!("[dazai] registered pid {pid} ({} total)", reg.len());
+                        b"OK\n"
+                    }
+                }
+                _ => b"ERROR invalid pid\n",
+            };
+            let _ = out.write_all(reply);
+            true
+        }
+        "UNREGISTER" => {
+            let reply: &[u8] = if let Some(pid) = parse_pid(line) {
+                let mut reg = ctx.registered.lock().unwrap_or_else(|p| p.into_inner());
+                reg.retain(|&p| p != pid);
+                b"OK\n"
+            } else {
+                b"ERROR invalid pid\n"
+            };
+            let _ = out.write_all(reply);
+            true
+        }
+        "ARM" => {
+            if ctx.armed.swap(true, Ordering::SeqCst) {
+                let _ = out.write_all(b"ALREADY_ARMED\n");
+            } else {
+                eprintln!(
+                    "[dazai] ARMED at runtime via control message — self-destruct is now LIVE"
+                );
+                let _ = out.write_all(b"OK\n");
+            }
+            true
+        }
+        "STATUS" => {
+            let registered = match ctx.registered.lock() {
+                Ok(g) => g.len(),
+                Err(p) => p.into_inner().len(),
+            };
+            let armed = ctx.armed.load(Ordering::SeqCst) as u8;
+            let _ = out.write_all(
+                format!(
+                    "STATUS alive=1 armed={armed} grace={} registered={registered}\n",
+                    ctx.grace.as_secs()
+                )
+                .as_bytes(),
+            );
+            true
+        }
+        "PING" => {
+            let _ = out.write_all(b"PONG\n");
+            true
+        }
+        "QUIT" => {
+            let _ = out.write_all(b"BYE\n");
+            false
+        }
+        "" => true,
+        _ => {
+            let _ = out.write_all(b"ERR unknown-verb\n");
+            true
         }
     }
 }

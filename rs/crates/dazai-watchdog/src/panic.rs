@@ -2,25 +2,32 @@
 //!
 //! All side effects are injected as closures so the policy can be exercised in
 //! tests with recording fakes — in particular the lethal `kill` is a callable,
-//! so tests drive the full decide/wipe/kill path without the test process
-//! actually dying.
+//! so the full decide/wipe/kill path runs without the test process dying.
+//!
+//! `armed` is an `Arc<AtomicBool>` rather than a plain `bool` so it can be
+//! flipped at runtime by an `ARM` control message (Phase 3).
 
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 /// Decides what each trigger does, given the arming / dry-run / grace policy.
 ///
 /// Collaborators (all injected):
+/// - `kill_registered`: SIGKILL every registered PID. Runs first on an armed
+///   trigger, *before* the buffer wipe, so supervised agents stop immediately.
 /// - `wipe`: zeroize every secret buffer.
-/// - `kill`: the lethal action (kill child + `raise(SIGKILL)` self). Only ever
-///   invoked when armed; in production it does not return.
+/// - `kill`: the lethal action for *this* process (kill child + `raise(SIGKILL)`
+///   self). Only ever invoked when armed; in production it does not return.
 /// - `dry_done`: invoked after a dry-run wipe so the host loop can wind down.
 /// - `clock`: monotonic `Instant` source (real: [`Instant::now`]).
 /// - `log`: human-facing log sink.
 pub struct PanicController {
-    armed: bool,
+    armed: Arc<AtomicBool>,
     grace: Duration,
     fired: bool,
     deadline: Option<Instant>,
+    kill_registered: Box<dyn FnMut()>,
     wipe: Box<dyn FnMut()>,
     kill: Box<dyn FnMut()>,
     dry_done: Box<dyn FnMut()>,
@@ -32,8 +39,9 @@ impl PanicController {
     /// Construct a controller from its policy and injected collaborators.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        armed: bool,
+        armed: Arc<AtomicBool>,
         grace: Duration,
+        kill_registered: Box<dyn FnMut()>,
         wipe: Box<dyn FnMut()>,
         kill: Box<dyn FnMut()>,
         dry_done: Box<dyn FnMut()>,
@@ -45,6 +53,7 @@ impl PanicController {
             grace,
             fired: false,
             deadline: None,
+            kill_registered,
             wipe,
             kill,
             dry_done,
@@ -53,9 +62,9 @@ impl PanicController {
         }
     }
 
-    /// Whether the controller is armed for a real self-destruct.
+    /// Whether the controller is currently armed for a real self-destruct.
     pub fn is_armed(&self) -> bool {
-        self.armed
+        self.armed.load(Ordering::SeqCst)
     }
 
     /// Whether a trigger has already fired (the one-shot guard is set).
@@ -75,7 +84,7 @@ impl PanicController {
     fn dry_wipe(&mut self, reason: &str, hard: bool) {
         let kind = if hard { "HARD " } else { "" };
         self.emit(&format!(
-            "DRY-RUN {kind}trigger ({reason}): zeroizing buffers; WOULD SIGKILL"
+            "DRY-RUN {kind}trigger ({reason}): zeroizing buffers; WOULD SIGKILL registered PIDs and self"
         ));
         (self.wipe)();
         self.fired = true;
@@ -90,7 +99,7 @@ impl PanicController {
         if self.fired {
             return;
         }
-        if !self.armed {
+        if !self.is_armed() {
             self.dry_wipe(reason, false);
             return;
         }
@@ -113,7 +122,7 @@ impl PanicController {
         if self.fired {
             return;
         }
-        if !self.armed {
+        if !self.is_armed() {
             self.dry_wipe(reason, true);
             return;
         }
@@ -140,14 +149,18 @@ impl PanicController {
         }
     }
 
-    /// The real self-destruct: wipe, then kill. Only reached when armed.
+    /// The real self-destruct: SIGKILL registered PIDs, wipe, then self-kill.
+    /// Only reached when armed.
     fn execute(&mut self, reason: &str) {
         if self.fired {
             return;
         }
         self.fired = true;
         self.deadline = None;
-        self.emit(&format!("PANIC ({reason}): zeroizing buffers and SIGKILL"));
+        self.emit(&format!(
+            "PANIC ({reason}): SIGKILL registered PIDs, zeroize buffers, then SIGKILL self"
+        ));
+        (self.kill_registered)();
         (self.wipe)();
         (self.kill)();
     }

@@ -29,7 +29,8 @@ dazai-watchdog  PanicController (policy) + Watchdog (socket listener, signal thr
 dazai-child     LLM child wrapper: parent spawns (fork+exec via Command), owns the PID,
                 kills the child on any trigger before self-destruct. unsafe-free.
 dazai-seccomp   Linux seccomp allowlist (feature `seccomp`); no-op stub elsewhere.
-dazai           CLI binary: `daemon` and `client` subcommands.
+dazai-mcp       MCP server (rmcp) exposing the daemon as tools any agent can use.
+dazai           CLI binary: `daemon`, `client`, and `mcp` subcommands.
 ```
 
 ## Usage
@@ -63,6 +64,83 @@ and `dazai client [--interval N] [--socket PATH]`. Default socket:
 
 A single heartbeat is honored; a second concurrent connection is refused with
 `BUSY`. Only a reconnect *after* a real loss cancels an armed grace window.
+
+## Phase 3: MCP server — session-bound protection for any agent
+
+Phase 3 adds **zero new mechanism** — it is a thin MCP adapter over the daemon.
+Any MCP client (an LLM agent, a recon swarm, a tool runner) registers its PID
+and gets the same session-bound protection: when the operator's session dies,
+dazai SIGKILLs every registered PID, then wipes and kills itself. No agent needs
+to know how dazai launches; dazai needs to know nothing about any agent.
+
+### Why MCP over `--exec`
+
+`--exec` supervises **one** child dazai launches itself. MCP inverts that: agents
+opt in by registering their own PID over a standard protocol, so protection is
+**loosely coupled** (dazai and the agent launch independently), **stack-wide**
+(any number of agents/tools register, capped at 32), and still preserves the
+**hard-kill guarantee** — a registered PID is SIGKILLed by the daemon on trigger
+exactly as an `--exec` child would be. `--exec` still works, unchanged; MCP is
+purely additive.
+
+### Run it
+
+```bash
+dazai daemon --arm --grace 5     # terminal 1: the daemon (writes <socket>.pid, 0600)
+dazai mcp                        # terminal 2: the MCP server (stdio transport)
+# point any MCP client at `dazai mcp`; the agent calls dazai_register(its pid)
+```
+
+`dazai mcp [--socket PATH] [--transport stdio]` — stdio is the standard MCP
+transport. The MCP server relays tool calls to the daemon socket, and reads the
+pidfile to signal the daemon for panic / hard-panic.
+
+### Tools
+
+| Tool | Effect | Returns |
+|---|---|---|
+| `dazai_status()` | `STATUS` round-trip (never fails; a dead daemon is valid) | `{alive, armed, grace_seconds, registered_pids}` |
+| `dazai_register(pid)` | `REGISTER pid=<pid>` | `{ok, message}` |
+| `dazai_unregister(pid)` | `UNREGISTER pid=<pid>` | `{ok, message}` |
+| `dazai_arm()` | `ARM` (runtime arm) | `{armed, message}` |
+| `dazai_panic()` | `SIGUSR1` to the daemon (graceful) | `{triggered}` |
+| `dazai_hard_panic()` | `SIGUSR2` to the daemon (bypass grace) | `{triggered}` |
+
+### Daemon control protocol (additive to the heartbeat protocol)
+
+A connection whose first verb is **not** `HELLO` is a *control* connection —
+request/response, any number, never touching the single-client heartbeat lock:
+
+```
+REGISTER pid=<N>    -> OK | BUSY (at 32) | ERROR invalid pid
+UNREGISTER pid=<N>  -> OK
+ARM                 -> OK (now armed) | ALREADY_ARMED
+STATUS              -> STATUS alive=1 armed=<0|1> grace=<n> registered=<n>
+```
+
+PIDs are validated with `kill(pid,0)` (must be > 0 and exist) and stored in a
+plain `Vec<u32>` — not sensitive, no `SecretBuffer`. On any **armed** trigger the
+daemon SIGKILLs every registered PID *before* wiping its buffers and SIGKILLing
+itself; dry-run only logs `WOULD` and never kills.
+
+### End-to-end verification (manual)
+
+```bash
+# terminal 1 — armed daemon
+dazai daemon --arm --grace 2
+
+# terminal 2 — MCP server
+dazai mcp
+
+# terminal 3 — an MCP client connected to `dazai mcp`:
+#   dazai_register(pid = <a process to protect>)
+#   dazai_status()  -> { alive: true, armed: true, registered_pids: 1 }
+
+# kill terminal 1's shell (or drop the heartbeat). Verify:
+#   - the daemon is gone (wiped + SIGKILL self)
+#   - the registered process is dead (SIGKILL)
+#   - dazai_status() from the MCP server now returns { alive: false }
+```
 
 ## seccomp allowlist (Linux, `--features seccomp`)
 
@@ -110,12 +188,16 @@ cargo fmt --check
   move-only, no escaping pointer, `mlock` success.
 - `dazai-watchdog`: full `PanicController` policy (dry-run never kills; armed
   grace fires only after the deadline; reconnect cancels; hard bypasses grace;
-  one-shot guard) — all via an injected fake killer.
+  one-shot guard; **registered → wipe → self ordering**) — all via injected fakes.
 - `dazai-child`: spawn/pid/kill/Drop.
 - `dazai-seccomp`: allowlist contents and dangerous-syscall omission.
-- `dazai` integration: spawn daemon+client, connection-drop / `SIGUSR1` /
-  `SIGUSR2` / ping-timeout dry-run exits, **armed drop really SIGKILLs**, armed
-  reconnect cancels, second client refused.
+- `dazai-mcp`: client logic against a **mock daemon** (status/register/unregister/
+  arm), and panic/hard-panic against an **injected fake signal sender** — no live
+  daemon needed.
+- `dazai` integration: connection-drop / `SIGUSR1` / `SIGUSR2` / ping-timeout
+  dry-run exits, **armed drop really SIGKILLs**, armed reconnect cancels, second
+  client refused, control-coexists-with-heartbeat, runtime `ARM`, and a
+  **registered PID is SIGKILLed on an armed trigger**.
 
 ## Honest remaining limitations
 

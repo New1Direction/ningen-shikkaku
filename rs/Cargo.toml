@@ -5,6 +5,7 @@ members = [
     "crates/dazai-watchdog",
     "crates/dazai-child",
     "crates/dazai-seccomp",
+    "crates/dazai-mcp",
     "crates/dazai",
 ]
 
@@ -19,12 +20,17 @@ libc = "0.2"
 anyhow = "1"
 signal-hook = "0.3"
 clap = { version = "4", features = ["derive"] }
+rmcp = { version = "0.3", features = ["server", "macros", "schemars", "transport-io"] }
+serde = { version = "1", features = ["derive"] }
+schemars = "1"
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "net", "io-util", "time"] }
 
 # Internal crates
 dazai-secmem = { path = "crates/dazai-secmem" }
 dazai-watchdog = { path = "crates/dazai-watchdog" }
 dazai-child = { path = "crates/dazai-child" }
 dazai-seccomp = { path = "crates/dazai-seccomp" }
+dazai-mcp = { path = "crates/dazai-mcp" }
 
 [profile.release]
 panic = "abort"

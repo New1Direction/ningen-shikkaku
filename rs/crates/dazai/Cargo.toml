@@ -14,9 +14,11 @@ dazai-secmem.workspace = true
 dazai-watchdog.workspace = true
 dazai-child.workspace = true
 dazai-seccomp.workspace = true
+dazai-mcp.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 signal-hook.workspace = true
+tokio.workspace = true
 
 [features]
 # Enable on Linux to compile and apply the seccomp allowlist.
