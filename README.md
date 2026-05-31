@@ -1,135 +1,143 @@
-# dazai — a session-bound, memory-zeroizing dead-man's-switch
+# daZai
 
-A small, portable **reference implementation** of a classic secure-secrets
-pattern: a daemon holds secret material in page-locked RAM, keeps a liveness
-channel open over a UNIX socket, and — on losing that liveness or receiving a
-panic signal — overwrites the secret (`ctypes.memset`) and hard-kills itself
-(`SIGKILL`). A shell `trap` ties the daemon's lifetime to your terminal
-session, so logging out wipes the secret.
+[![CI](https://github.com/New1Direction/daZai/actions/workflows/ci.yml/badge.svg)](https://github.com/New1Direction/daZai/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-This is built for study and defensive use: it operates **only on its own
-process and a synthetic secret**, with safety rails (dry-run by default, an
-arming flag, a cancellable grace window). It does not touch any other process,
-file, or machine.
+**Secrets that live only as long as you do.**
 
-## Why each piece exists
+daZai is a session-bound, memory-zeroizing dead-man's-switch. It pins secret
+material into locked, non-swappable RAM, holds a liveness channel tied to your
+shell or SSH session, and the moment that liveness is lost — you log out, the
+connection drops, a panic signal arrives, or a daemon it's watching dies — it
+overwrites the secrets with a wipe the compiler can't optimize away and
+`SIGKILL`s the processes holding them.
 
-| Mechanism | Purpose |
+It runs **only on your own machine, on your own secrets and your own configured
+tools**. It never touches another process, file, or host.
+
+It ships in two layers:
+
+- a **hardened Rust daemon + tooling** — the real thing: `mlock` (no swap),
+  `madvise(MADV_DONTDUMP)` + `prctl(PR_SET_DUMPABLE, 0)` (no core dumps / no
+  ptrace), a **seccomp** syscall allowlist (no `execve`/`open`/`connect`/…), and
+  a non-elidable `explicit_bzero` / `memset_s` wipe; and
+- a **Python reference implementation** — the original proof-of-concept that
+  established the mechanism (see [`python-reference.md`](python-reference.md)).
+
+## What's in the box
+
+| Component | What it does |
 |---|---|
-| `mlock(2)` on the working buffers | Keep secret bytes out of swap (defends against secrets leaking to disk). CWE-591 mitigation. |
-| `madvise(MADV_DONTDUMP)` (Linux) | Exclude the pages from core dumps. |
-| UNIX-socket heartbeat | Liveness signal: a connected client means "still guarded". Its loss is a trigger. |
-| `ctypes.memset` | The wipe primitive — overwrite the secret with zeros before exit. |
-| `os.kill(getpid, SIGKILL)` | Immediate, uncatchable self-termination once wiped. |
-| Shell `trap … EXIT` | Couples secret lifetime to the interactive session. |
+| `dazai daemon` | The watchdog: holds `mlock`'d secrets + a UNIX-socket heartbeat; wipes and self-destructs on session loss. seccomp-confined on Linux. |
+| `dazai client` | The heartbeat client — ties the daemon's life to a shell / SSH session. |
+| `dazai mcp` | An MCP server exposing the daemon as tools, so any agent can register its PID for session-bound protection (it gets `SIGKILL`ed if your session dies). |
+| `dazai-oneshot` | A standalone **self-immolating** MCP server: serve N tool calls, then wipe secret state and exit. |
+| Python reference | `secmem.py` / `deadman.py` / `heartbeat.py` / `shellrc.sh` — the portable proof-of-concept. |
 
-## Components
+## Install
 
-- **`secmem.py`** — `SecureBuffer`: page-aligned `mmap` → `mlock` →
-  (Linux) `madvise(DONTDUMP)` → `write` / `read` / `zeroize` → `free`.
-  Degrades loudly (stays usable, unlocked) if `mlock` is refused.
-- **`deadman.py`** — the daemon: heartbeat listener, signal handlers, and a
-  unit-tested `PanicController` that encodes the arming / dry-run / grace policy.
-- **`heartbeat.py`** — the client that holds the liveness connection open.
-- **`shellrc.sh`** — source-able bash/zsh snippet; launches the client and sets
-  the `EXIT` trap.
+Needs a recent Rust toolchain. On Linux, install `libseccomp-dev` + `pkg-config`
+to build the seccomp-confined daemon.
 
-## Safety model
+```bash
+git clone https://github.com/New1Direction/daZai
+cd daZai/rs
+cargo build --release                       # -> target/release/{dazai, dazai-oneshot}
+cargo build --release --features seccomp    # Linux: with the seccomp allowlist
+```
 
-**Default is `--dry-run`** (i.e. no `--arm`). On any trigger the daemon *does*
-run the real `memset` zeroization and logs `WOULD SIGKILL`, but does **not**
-kill — so you can rehearse the whole path safely. Pass `--arm` for a real
-self-destruct; graceful triggers then go through a cancellable `--grace` window
-(a reconnect or a `CANCEL` line aborts). The lethal `SIGKILL` is injected as a
-callable, so the test suite exercises the full decide/zeroize path with a fake
-killer instead of dying.
+## Demo
 
-## Triggers
+A self-destructing one-shot secret server, in one line:
 
-| Event | Behavior |
+```bash
+dazai-oneshot --calls 1 \
+  --tool 'name=get_key,kind=static,value=s3cr3t' \
+  --arm
+```
+
+Point any MCP client at it and call `get_key` **once** → you receive `s3cr3t` →
+the server wipes the value out of locked memory and `SIGKILL`s itself. Call
+again → the process is gone.
+
+Or the session-coupled daemon (dry-run is the safe default; `--arm` makes it
+real):
+
+```bash
+dazai daemon --ping-timeout 15        # terminal A
+dazai client --interval 5             # terminal B
+# close terminal B  ->  the daemon wipes its secrets and exits
+```
+
+## Threat model
+
+daZai shrinks the *window* and the *surface* in which plaintext secrets are
+reachable, and makes session-end deterministically destroy them.
+
+**It protects against:**
+
+| Risk | How |
 |---|---|
-| Heartbeat connection dropped (EOF) | graceful panic |
-| `--ping-timeout` deadline missed | graceful panic |
-| `SIGUSR1` | graceful panic (via self-pipe → main loop) |
-| `SIGUSR2` | **hard** panic: minimal in-handler `memset` + `SIGKILL`, no grace |
-| `SIGTERM` / `SIGINT` | clean shutdown (zeroize + exit 0) |
+| Secrets paged to **swap** | `mlock` locks the buffers into RAM |
+| Secrets captured in **core dumps** | `madvise(MADV_DONTDUMP)` + `prctl(PR_SET_DUMPABLE, 0)` (Linux) |
+| **Session loss** leaving secrets resident | heartbeat drop / logout → wipe + `SIGKILL` |
+| Secrets lingering in **process memory** after use | `explicit_bzero` / `memset_s` — a wipe the compiler may not elide |
+| A confined process **escaping** | seccomp allowlist denies `execve` / `open` / `connect` / `ptrace` / … (Linux) |
+| **ptrace** snooping the daemon | `prctl(PR_SET_DUMPABLE, 0)` (Linux) |
 
-Graceful panic = dry-run wipe (default) or armed grace-window-then-kill.
+**It does NOT protect against** (and the project is deliberately honest about
+this):
 
-## Usage
+- **GPU VRAM.** If an attached LLM/agent copies a secret into GPU memory,
+  killing the host process does not wipe VRAM. daZai controls host RAM and the
+  processes it supervises — not an accelerator's memory.
+- **`exec`-tool stdout.** `dazai-oneshot`'s `kind=exec` tools return a command's
+  stdout, which is OS-buffered and **not** held in a locked buffer. Use
+  `kind=static` (a pre-loaded, locked, wipeable value) when you need the wipe
+  guarantee.
+- **Managed-runtime residue (Python reference).** CPython copies `bytes` freely,
+  so a secret may transiently live in unlocked heap before/after the locked
+  buffer. The **Rust** implementation eliminates this for its own buffers (data
+  is written into the locked mapping and never copied to a GC heap); the Python
+  tier is a *reference*, not a hard guarantee.
+- **A privileged or same-UID attacker on the live box** (root, `/proc/<pid>/mem`,
+  a debugger) reading memory before the wipe. `mlock` stops swap, not memory
+  reads; seccomp + `PR_SET_DUMPABLE` raise the bar on Linux, but an adversary
+  who already has privileged access to your running machine is out of scope.
+- **Cold-boot / DMA / physical** attacks on RAM.
+- **A hard crash** (kernel OOM, an external `kill -9`, power loss): the wipe
+  path can't run, so nothing is zeroed. The mechanism is best-effort on these
+  paths and never claims otherwise.
 
-Rehearse safely first (dry-run):
+In short: daZai is not, and cannot be, a guarantee against an attacker who
+already owns your running machine. It is a sharp tool for making secrets
+ephemeral and session-bound, with every limitation stated up front.
 
-```bash
-python3 deadman.py --ping-timeout 15            # terminal A
-python3 heartbeat.py --interval 5               # terminal B
-# Ctrl-C terminal B  ->  terminal A wipes, logs WOULD SIGKILL, exits 0
-```
+## Verification
 
-Arm it for real (the daemon will actually SIGKILL itself):
+- **66 tests** across the Rust workspace (secure memory, the panic policy, the
+  wire protocol, the MCP layer, the one-shot lifecycle) plus the **29-test**
+  Python reference.
+- **Linux seccomp is validated on both architectures under the real
+  `KillProcess` filter** — `aarch64` (locally) and `x86_64`
+  ([CI](https://github.com/New1Direction/daZai/actions)) — where the daemon
+  installs the live filter and the full integration suite runs against it with
+  no `SIGSYS`.
+- Every push runs the whole suite (default **and** `--features seccomp`),
+  `clippy -D warnings`, and `rustfmt --check` on x86_64 Linux as a permanent
+  regression gate.
 
-```bash
-python3 deadman.py --arm --grace 5 --ping-timeout 15 &
-```
+Deep technical docs (per-crate design, the seccomp allowlist, the
+adversarial-review history) live in [`rs/README.md`](rs/README.md); the Python
+proof-of-concept is in [`python-reference.md`](python-reference.md).
 
-Couple it to your shell — add to `~/.bashrc` or `~/.zshrc`:
+## The name
 
-```bash
-source ~/Documents/dazai/shellrc.sh
-```
+Named for the novelist **Osamu Dazai**, whose work (*No Longer Human*) circles
+themes of disappearance and self-erasure — fitting for software whose defining
+act is to wipe itself out the moment it is no longer being watched over. It's
+flavor, not a manifesto; the software just self-destructs on cue.
 
-Now any interactive shell launches a heartbeat client; on logout the `EXIT`
-trap kills it, the connection drops, and an armed daemon wipes and dies.
+## License
 
-### Wire protocol (newline-delimited text over `SOCK_STREAM`)
-
-```
-client → HELLO <pid>   daemon → WELCOME
-client → PING          daemon → PONG        (refreshes the ping deadline)
-client → CANCEL        daemon → CANCELLED   (aborts a pending armed panic)
-client → QUIT          daemon → BYE         (intentional clean stand-down)
-connection closed      → heartbeat lost → panic
-```
-
-Single-client liveness: while one heartbeat is connected, a second concurrent
-connection is refused with `BUSY` and closed, so it cannot displace the real
-heartbeat or cancel a pending panic. Only a reconnect *after* the heartbeat was
-actually lost cancels an armed grace window.
-
-## Tests
-
-```bash
-python3 -m unittest discover -s tests -v
-```
-
-Covers `SecureBuffer` write/read/zeroize, the `PanicController` policy
-(dry-run never kills; armed grace kills only after the deadline; reconnect
-cancels; the fired-once guard), and an end-to-end daemon run driven over the
-socket.
-
-## Platform notes
-
-- **macOS & Linux.** libc is resolved via `ctypes.util.find_library` with
-  fallbacks; `mlock`/`munlock` work on both. `MADV_DONTDUMP` is Linux-only.
-- `RLIMIT_MEMLOCK` caps how much an unprivileged process may lock; the daemon
-  tries to raise the soft limit to the hard limit. If locking is still refused,
-  it warns and continues unlocked.
-- **Socket path limit.** `AF_UNIX` paths are bounded by `sun_path` (~104 bytes
-  on macOS, 108 on Linux). The daemon validates `--socket` up front and exits
-  with a clear message rather than an opaque bind error.
-- **Signals are installed before any secret is written**, so a panic signal
-  arriving during startup still wipes instead of hitting the default
-  terminate-without-wipe disposition.
-- **Shell integration is non-destructive.** `shellrc.sh` is idempotent, is
-  `set -u`-safe, and does not clobber an existing exit handler: it chains onto a
-  pre-existing bash `EXIT` trap and uses the additive `zshexit` hook in zsh. If
-  the daemon socket or `python3` is missing it prints a visible "session
-  UNGUARDED" notice instead of failing silently.
-
-## Honest limitation
-
-CPython copies `bytes` objects freely, so a secret may have transiently lived
-in unlocked heap before reaching a `SecureBuffer`. This project demonstrates
-the *mechanism* (page-locking + explicit zeroization + session-coupled wipe);
-it is not a guarantee of zero plaintext residue inside a managed runtime. For
-hard guarantees you want a language with end-to-end control of allocation.
+[MIT](LICENSE) © 2026 New1Direction.
