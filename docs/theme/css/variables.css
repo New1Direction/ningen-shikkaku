@@ -1,0 +1,48 @@
+:root {
+    --sidebar-width: 280px;
+    --page-padding: 15px;
+    --content-max-width: 750px;
+    --menu-bar-height: 50px;
+}
+
+.ayu {
+    --bg: #080808;
+    --fg: #c5c5c5;
+
+    --sidebar-bg: #0a0a0a;
+    --sidebar-fg: #888888;
+    --sidebar-non-existant: #444444;
+    --sidebar-active: #e74c3c;
+    --sidebar-spacer: #1a1a1a;
+
+    --scrollbar: #1a1a1a;
+
+    --icons: #555555;
+    --icons-hover: #e74c3c;
+
+    --links: #e74c3c;
+
+    --inline-code-color: #c0392b;
+
+    --theme-popup-bg: #0a0a0a;
+    --theme-popup-border: #1a1a1a;
+    --theme-hover: #111111;
+
+    --quote-bg: #0f0f0f;
+    --quote-border: #8b0000;
+
+    --table-border-color: #1a1a1a;
+    --table-header-bg: #0f0f0f;
+    --table-alternate-bg: #0a0a0a;
+
+    --searchbar-border-color: #1a1a1a;
+    --searchbar-bg: #0a0a0a;
+    --searchbar-fg: #c5c5c5;
+    --searchbar-shadow-color: #000000;
+    --searchresults-header-fg: #888888;
+    --searchresults-border-color: #1a1a1a;
+    --searchresults-li-bg: #0f0f0f;
+    --search-mark-bg: #8b0000;
+
+    --color-scheme: dark;
+}

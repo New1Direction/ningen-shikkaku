@@ -1,0 +1,30 @@
+[book]
+title = "ningen-shikkaku"
+authors = ["New1Direction"]
+language = "en"
+multilingual = false
+src = "docs/src"
+
+[build]
+build-dir = "docs/book"
+
+[output.html]
+theme = "docs/theme"
+default-theme = "ayu"
+preferred-dark-theme = "ayu"
+git-repository-url = "https://github.com/New1Direction/ningen-shikkaku"
+git-repository-icon = "fa-github"
+edit-url-template = "https://github.com/New1Direction/ningen-shikkaku/edit/main/docs/src/{path}"
+no-section-label = true
+additional-css = ["./mdbook-admonish.css"]
+
+[output.html.search]
+enable = true
+limit-results = 20
+use-boolean-and = true
+
+[preprocessor]
+
+[preprocessor.admonish]
+command = "mdbook-admonish"
+assets_version = "3.0.2" # do not edit: managed by `mdbook-admonish install`
