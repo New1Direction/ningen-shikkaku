@@ -110,6 +110,20 @@ pub fn sigkill_pid(pid: u32) -> bool {
     send_signal(pid, libc::SIGKILL)
 }
 
+/// Send `SIGKILL` to the current process. Never returns.
+pub fn raise_sigkill() -> ! {
+    // SAFETY: `raise(SIGKILL)` targets the current process and takes no memory
+    // arguments; SIGKILL is uncatchable, so control never returns here.
+    unsafe {
+        libc::raise(libc::SIGKILL);
+    }
+    // Unreachable in practice (SIGKILL already terminated us); spin to honor the
+    // `!` return type if the kernel were ever to return.
+    loop {
+        std::hint::spin_loop();
+    }
+}
+
 /// Query the system page size, falling back to 4 KiB.
 fn page_size() -> usize {
     // SAFETY: `sysconf` is a pure query with no memory arguments.

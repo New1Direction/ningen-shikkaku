@@ -30,6 +30,7 @@ dazai-child     LLM child wrapper: parent spawns (fork+exec via Command), owns t
                 kills the child on any trigger before self-destruct. unsafe-free.
 dazai-seccomp   Linux seccomp allowlist (feature `seccomp`); no-op stub elsewhere.
 dazai-mcp       MCP server (rmcp) exposing the daemon as tools any agent can use.
+dazai-oneshot   Self-immolating MCP server: serve N tool calls, then wipe + exit.
 dazai           CLI binary: `daemon`, `client`, and `mcp` subcommands.
 ```
 
@@ -141,6 +142,64 @@ dazai mcp
 #   - the registered process is dead (SIGKILL)
 #   - dazai_status() from the MCP server now returns { alive: false }
 ```
+
+## dazai-oneshot — a self-immolating MCP server
+
+A standalone MCP server that serves a configurable number of tool calls, then
+wipes its in-memory secret state and exits. It adds no new mechanism: static
+tool values are held in `dazai_secmem::SecretBuffer`s, and the optional daemon
+integration reuses the dazai control protocol. `#![deny(unsafe_code)]`.
+
+### Three death conditions (whichever fires first)
+
+| Flag | Condition |
+|---|---|
+| `--calls N` (default 1) | exit after N tool calls complete |
+| `--session` | exit when the client disconnects (stdin EOF) |
+| `--dazai-socket PATH` | register with a dazai daemon; self-destruct if it dies |
+
+(`--calls` + `--session` together = exit on *either*.) All paths funnel through
+one wipe+exit routine that fires at most once: best-effort daemon `UNREGISTER` →
+a brief flush window (so the final MCP response reaches the client — rmcp has no
+post-send hook) → optional `--grace N` wait → wipe every `SecretBuffer` → exit.
+`--arm` makes the exit a non-elidable wipe + `raise(SIGKILL)`; the default is a
+clean `exit(0)`.
+
+### Tool spec format
+
+```bash
+--tool 'name=get_key,kind=static,value=s3cr3t'   # fixed value, held in a SecretBuffer
+--tool 'name=run,kind=exec,cmd=/path/to/script'  # runs a command, returns its stdout
+```
+
+`--tool` is repeatable. Segments are comma-separated `key=value`, so values and
+commands must not contain commas. `exec` commands are split on whitespace and
+run **without a shell** (no quoting/globbing/expansion) — the configured command
+is the only thing executed, so a caller cannot inject anything.
+
+### Run it
+
+```bash
+dazai-oneshot --calls 1 --tool 'name=get_key,kind=static,value=s3cr3t' --arm
+# an MCP client calls get_key once -> receives 's3cr3t' -> the server wipes + SIGKILLs itself
+# a second call -> the process is gone (connection closed)
+
+# tie a tool server's lifetime to a dazai daemon:
+dazai-oneshot --session --dazai-socket "$XDG_RUNTIME_DIR/dazai-$UID.sock" \
+  --tool 'name=key,kind=static,value=...'
+```
+
+### Honest limitations
+
+- **`exec` stdout is NOT in a SecretBuffer** — it is buffered by the OS and the
+  process pipe. If you need the wipe guarantee for a value, use `kind=static`
+  with a pre-loaded value (held in a locked, wipeable buffer at rest).
+- The static value is copied out of its `SecretBuffer` to be returned to the
+  client (it must leave the buffer to be served); the buffer protects it **at
+  rest** between calls and wipes it on exit.
+- A hard crash (no clean exit and no `--arm` path) cannot run the wipe; the
+  daemon also retains the registration until its own next trigger. `wipe_and_exit`
+  attempts `UNREGISTER` first even on the armed path to minimize this window.
 
 ## seccomp allowlist (Linux, `--features seccomp`)
 
