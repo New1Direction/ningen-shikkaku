@@ -1,6 +1,6 @@
 # daZai
 
-[![CI](https://github.com/New1Direction/daZai/actions/workflows/ci.yml/badge.svg)](https://github.com/New1Direction/daZai/actions/workflows/ci.yml)
+[![CI](https://github.com/New1Direction/ningen-shikkaku/actions/workflows/ci.yml/badge.svg)](https://github.com/New1Direction/ningen-shikkaku/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 **Secrets that live only as long as you do.**
@@ -40,8 +40,8 @@ Needs a recent Rust toolchain. On Linux, install `libseccomp-dev` + `pkg-config`
 to build the seccomp-confined daemon.
 
 ```bash
-git clone https://github.com/New1Direction/daZai
-cd daZai/rs
+git clone https://github.com/New1Direction/ningen-shikkaku
+cd ningen-shikkaku/rs
 cargo build --release                       # -> target/release/{dazai, dazai-oneshot}
 cargo build --release --features seccomp    # Linux: with the seccomp allowlist
 ```
@@ -120,7 +120,7 @@ ephemeral and session-bound, with every limitation stated up front.
   Python reference.
 - **Linux seccomp is validated on both architectures under the real
   `KillProcess` filter** — `aarch64` (locally) and `x86_64`
-  ([CI](https://github.com/New1Direction/daZai/actions)) — where the daemon
+  ([CI](https://github.com/New1Direction/ningen-shikkaku/actions)) — where the daemon
   installs the live filter and the full integration suite runs against it with
   no `SIGSYS`.
 - Every push runs the whole suite (default **and** `--features seccomp`),
@@ -133,10 +133,11 @@ proof-of-concept is in [`python-reference.md`](python-reference.md).
 
 ## The name
 
-Named for the novelist **Osamu Dazai**, whose work (*No Longer Human*) circles
-themes of disappearance and self-erasure — fitting for software whose defining
-act is to wipe itself out the moment it is no longer being watched over. It's
-flavor, not a manifesto; the software just self-destructs on cue.
+Named for the novelist **Osamu Dazai**, whose work circles themes of
+disappearance and self-erasure — fitting for software whose defining act is to
+wipe itself out the moment it is no longer being watched over. The repository
+takes its name from his novel *No Longer Human* (人間失格, *Ningen Shikkaku*).
+It's flavor, not a manifesto; the software just self-destructs on cue.
 
 ## License
 
