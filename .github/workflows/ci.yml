@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  linux-x86_64-seccomp:
+    name: x86_64 Linux + seccomp
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: rs
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install libseccomp + strace
+        run: sudo apt-get update && sudo apt-get install -y libseccomp-dev pkg-config strace
+
+      - name: Toolchain + arch
+        run: |
+          rustup component add rustfmt clippy
+          rustc --version
+          echo "arch=$(uname -m)"
+
+      - name: rustfmt
+        run: cargo fmt --all --check
+
+      - name: clippy (-D warnings, default)
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: clippy (-D warnings, seccomp feature)
+        run: cargo clippy --all-targets --features seccomp -- -D warnings
+
+      - name: test (default features)
+        run: cargo test
+
+      # Informative only: build the seccomp binary and strace the daemon. If a
+      # required syscall is missing on x86_64 the filter SIGSYS-kills it here and
+      # the offending syscall shows up in the log, so a red run is actionable in
+      # one pass. Never fails the job (the real verdict is the seccomp test below).
+      - name: seccomp strace diagnostic
+        continue-on-error: true
+        run: |
+          cargo build --features seccomp -q
+          timeout 8 strace -f -o /tmp/daemon.strace \
+            target/debug/dazai daemon --socket /tmp/ci-diag.sock 2>/tmp/daemon.err || true
+          echo "--- daemon stderr ---"; cat /tmp/daemon.err || true
+          echo "--- SIGSYS (empty == filter OK) ---"; grep -nE "SIGSYS|killed by" /tmp/daemon.strace || echo "(none)"
+          echo "--- last strace lines ---"; tail -n 12 /tmp/daemon.strace || true
+
+      - name: test (--features seccomp, live KillProcess filter)
+        run: cargo test --features seccomp

@@ -113,6 +113,12 @@ mod imp {
         "setsockopt",
         "fcntl",
         "fstat",
+        // x86_64 TLS syscall (glibc); benign (sets a segment base, no file/exec/
+        // net surface). Added defensively for native x86_64 — the local
+        // Rosetta-emulated run could NOT validate seccomp (qemu/Rosetta does not
+        // support a guest installing a seccomp filter), so native x86_64 CI is
+        // the validator. Best-effort, so it is skipped on aarch64.
+        "arch_prctl",
     ];
 
     /// Install the seccomp filter (default action: kill the process).
