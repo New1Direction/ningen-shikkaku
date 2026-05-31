@@ -1,0 +1,8 @@
+# Rust build artifacts
+/rs/target/
+target/
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
