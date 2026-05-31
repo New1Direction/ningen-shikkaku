@@ -76,12 +76,17 @@ exit_group futex sigprocmask rt_sigaction
 ```
 
 The effective filter additionally permits the syscalls the Rust runtime, its
-threads, the allocator, and `signal-hook` unavoidably issue (`clone3`, `munmap`,
-`mprotect`, `rt_sigreturn`, `pipe2`, `clock_*`, `getrandom`, `accept4`,
-`recvfrom`/`sendto`, …) — without these the process would `SIGSYS` on its own
-machinery. The dangerous syscalls remain **denied**: `execve`, `open`/`openat`,
-`connect`, `ptrace`, `mount`, `setns`, etc. (See
-`dazai_seccomp::conceptual_allowlist`.)
+threads, the allocator, and `signal-hook` unavoidably issue — verified by
+`strace`-ing the running daemon: `clone3`, `munmap`, `mprotect`, `socketpair`
+(signal-hook's wakeup pipe), `sigaltstack` (per-thread stack guard),
+`sched_getaffinity`, `setsockopt`, `fcntl`, `fstat`, `rt_sigreturn`, `ppoll`,
+`clock_*`, `getrandom`, `accept4`, `recvfrom`/`sendto`, `wait4`/`waitid` (child
+reap), `statx`/`unlinkat` (socket teardown), … — without these the process
+`SIGSYS`es on its own machinery. The dangerous syscalls remain **denied**:
+`execve`, `open`/`openat`, `connect`, `ptrace`, `mount`, `setns`, etc. — these
+fire only *before* the filter is applied (own exec, glibc startup, the
+pre-seccomp child spawn), so the steady-state daemon cannot open files or exec.
+(See `dazai_seccomp::conceptual_allowlist`.)
 
 ## Portability
 

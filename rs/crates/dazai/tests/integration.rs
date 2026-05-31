@@ -172,6 +172,29 @@ fn armed_grace_drop_really_sigkills() {
 }
 
 #[test]
+fn armed_with_child_reaps_and_self_sigkills() {
+    // Exercises the child-reap path: the armed kill closure runs
+    // child.kill()+child.wait() (waitpid -> wait4) before raise(SIGKILL).
+    // On Linux + --features seccomp this is the regression test for the wait4
+    // allowlist gap: without it the daemon dies by SIGSYS, not SIGKILL.
+    let sock = unique_socket();
+    let mut child = spawn_daemon(&sock, &["--arm", "--grace", "1", "--exec", "/bin/sleep"]);
+    assert!(wait_for_socket(&sock));
+    let mut c = connect(&sock);
+    c.write_all(b"HELLO 1\n").unwrap();
+    let _ = recv(&mut c);
+    drop(c); // drop -> 1s grace -> kill child (reap via wait4) -> SIGKILL self
+
+    let status = child.wait().unwrap();
+    assert_eq!(
+        status.signal(),
+        Some(9),
+        "armed daemon with a child should self-SIGKILL (not die by SIGSYS)"
+    );
+    let _ = std::fs::remove_file(&sock);
+}
+
+#[test]
 fn armed_reconnect_within_grace_cancels() {
     let sock = unique_socket();
     let mut child = spawn_daemon(&sock, &["--arm", "--grace", "3"]);

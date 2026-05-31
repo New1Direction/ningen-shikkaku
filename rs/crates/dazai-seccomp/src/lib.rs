@@ -97,6 +97,22 @@ mod imp {
         "unlinkat",
         "faccessat",
         "faccessat2",
+        // Verified by stracing the running daemon (all issued AFTER apply()):
+        //   socketpair        - signal-hook's wakeup self-pipe
+        //   sigaltstack       - per-thread stack-overflow guard on thread spawn
+        //   sched_getaffinity - pthread setup / runtime sizing
+        //   setsockopt        - UnixStream::set_read_timeout (ping deadline)
+        //   fcntl             - UnixStream::try_clone (F_DUPFD_CLOEXEC)
+        //   fstat             - stderr tty probe on the first post-apply log
+        // (execve and open/openat are deliberately NOT here: they occur only
+        //  before apply() — own exec, glibc startup, the pre-seccomp child
+        //  spawn — so the steady-state filter still denies file-open and exec.)
+        "socketpair",
+        "sigaltstack",
+        "sched_getaffinity",
+        "setsockopt",
+        "fcntl",
+        "fstat",
     ];
 
     /// Install the seccomp filter (default action: kill the process).
