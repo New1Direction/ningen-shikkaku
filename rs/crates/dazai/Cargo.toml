@@ -1,0 +1,23 @@
+[package]
+name = "dazai"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+description = "dazai Phase 2 CLI — hardened dead-man's-switch daemon"
+
+[[bin]]
+name = "dazai"
+path = "src/main.rs"
+
+[dependencies]
+dazai-secmem.workspace = true
+dazai-watchdog.workspace = true
+dazai-child.workspace = true
+dazai-seccomp.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+signal-hook.workspace = true
+
+[features]
+# Enable on Linux to compile and apply the seccomp allowlist.
+seccomp = ["dazai-seccomp/seccomp"]

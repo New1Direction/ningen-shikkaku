@@ -1,0 +1,13 @@
+[package]
+name = "dazai-secmem"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+description = "Secure memory primitives for dazai: page-locked, non-swappable, explicitly-wiped buffers"
+
+[dependencies]
+libc.workspace = true
+
+# NOTE: this is the ONLY crate in the workspace permitted to use `unsafe`.
+# Every other crate sets `#![deny(unsafe_code)]`. Every unsafe block here has a
+# `// SAFETY:` justification.

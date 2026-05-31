@@ -1,0 +1,30 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/dazai-secmem",
+    "crates/dazai-watchdog",
+    "crates/dazai-child",
+    "crates/dazai-seccomp",
+    "crates/dazai",
+]
+
+[workspace.package]
+edition = "2021"
+version = "0.1.0"
+license = "MIT"
+description = "dazai Phase 2 — hardened Rust dead-man's-switch daemon"
+
+[workspace.dependencies]
+libc = "0.2"
+anyhow = "1"
+signal-hook = "0.3"
+clap = { version = "4", features = ["derive"] }
+
+# Internal crates
+dazai-secmem = { path = "crates/dazai-secmem" }
+dazai-watchdog = { path = "crates/dazai-watchdog" }
+dazai-child = { path = "crates/dazai-child" }
+dazai-seccomp = { path = "crates/dazai-seccomp" }
+
+[profile.release]
+panic = "abort"

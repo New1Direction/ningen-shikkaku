@@ -1,0 +1,154 @@
+//! The panic decision policy, ported from the Phase 1 Python `PanicController`.
+//!
+//! All side effects are injected as closures so the policy can be exercised in
+//! tests with recording fakes — in particular the lethal `kill` is a callable,
+//! so tests drive the full decide/wipe/kill path without the test process
+//! actually dying.
+
+use std::time::{Duration, Instant};
+
+/// Decides what each trigger does, given the arming / dry-run / grace policy.
+///
+/// Collaborators (all injected):
+/// - `wipe`: zeroize every secret buffer.
+/// - `kill`: the lethal action (kill child + `raise(SIGKILL)` self). Only ever
+///   invoked when armed; in production it does not return.
+/// - `dry_done`: invoked after a dry-run wipe so the host loop can wind down.
+/// - `clock`: monotonic `Instant` source (real: [`Instant::now`]).
+/// - `log`: human-facing log sink.
+pub struct PanicController {
+    armed: bool,
+    grace: Duration,
+    fired: bool,
+    deadline: Option<Instant>,
+    wipe: Box<dyn FnMut()>,
+    kill: Box<dyn FnMut()>,
+    dry_done: Box<dyn FnMut()>,
+    clock: Box<dyn Fn() -> Instant>,
+    log: Box<dyn Fn(&str)>,
+}
+
+impl PanicController {
+    /// Construct a controller from its policy and injected collaborators.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        armed: bool,
+        grace: Duration,
+        wipe: Box<dyn FnMut()>,
+        kill: Box<dyn FnMut()>,
+        dry_done: Box<dyn FnMut()>,
+        clock: Box<dyn Fn() -> Instant>,
+        log: Box<dyn Fn(&str)>,
+    ) -> Self {
+        PanicController {
+            armed,
+            grace,
+            fired: false,
+            deadline: None,
+            wipe,
+            kill,
+            dry_done,
+            clock,
+            log,
+        }
+    }
+
+    /// Whether the controller is armed for a real self-destruct.
+    pub fn is_armed(&self) -> bool {
+        self.armed
+    }
+
+    /// Whether a trigger has already fired (the one-shot guard is set).
+    pub fn has_fired(&self) -> bool {
+        self.fired
+    }
+
+    /// The pending grace deadline, if an armed graceful panic is scheduled.
+    pub fn pending_deadline(&self) -> Option<Instant> {
+        self.deadline
+    }
+
+    fn emit(&self, msg: &str) {
+        (self.log)(msg);
+    }
+
+    fn dry_wipe(&mut self, reason: &str, hard: bool) {
+        let kind = if hard { "HARD " } else { "" };
+        self.emit(&format!(
+            "DRY-RUN {kind}trigger ({reason}): zeroizing buffers; WOULD SIGKILL"
+        ));
+        (self.wipe)();
+        self.fired = true;
+        (self.dry_done)();
+    }
+
+    /// A graceful trigger (heartbeat loss, missed ping, `SIGUSR1`).
+    ///
+    /// Dry-run wipes and stands down; armed schedules a cancellable grace
+    /// window (or executes immediately if `grace == 0`).
+    pub fn request_graceful(&mut self, reason: &str) {
+        if self.fired {
+            return;
+        }
+        if !self.armed {
+            self.dry_wipe(reason, false);
+            return;
+        }
+        if self.grace > Duration::ZERO {
+            let deadline = (self.clock)() + self.grace;
+            self.deadline = Some(deadline);
+            self.emit(&format!(
+                "ARMED trigger ({reason}): SIGKILL in {:?} unless a client reconnects or sends CANCEL",
+                self.grace
+            ));
+        } else {
+            self.execute(reason);
+        }
+    }
+
+    /// A hard trigger (`SIGUSR2`): bypasses the grace window entirely.
+    ///
+    /// Dry-run still only wipes; armed executes the real self-destruct now.
+    pub fn request_hard(&mut self, reason: &str) {
+        if self.fired {
+            return;
+        }
+        if !self.armed {
+            self.dry_wipe(reason, true);
+            return;
+        }
+        self.execute(reason);
+    }
+
+    /// Abort a pending armed panic. Returns whether one was pending.
+    pub fn cancel(&mut self, reason: &str) -> bool {
+        if self.deadline.is_some() {
+            self.deadline = None;
+            self.emit(&format!("panic CANCELLED ({reason})"));
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Drive the grace timer; call once per host-loop iteration / timeout.
+    pub fn tick(&mut self, now: Instant) {
+        if let Some(deadline) = self.deadline {
+            if now >= deadline {
+                self.execute("grace window expired");
+            }
+        }
+    }
+
+    /// The real self-destruct: wipe, then kill. Only reached when armed.
+    fn execute(&mut self, reason: &str) {
+        if self.fired {
+            return;
+        }
+        self.fired = true;
+        self.deadline = None;
+        self.emit(&format!("PANIC ({reason}): zeroizing buffers and SIGKILL"));
+        (self.wipe)();
+        (self.kill)();
+    }
+}
