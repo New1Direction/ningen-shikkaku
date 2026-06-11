@@ -1,0 +1,23 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.New1Direction/motokano",
+  "title": "dazai — burn-after-reading secret (motokano)",
+  "description": "Serve a secret to an agent exactly N times from locked RAM, then wipe it and self-destruct.",
+  "repository": {
+    "url": "https://github.com/New1Direction/ningen-shikkaku",
+    "source": "github"
+  },
+  "websiteUrl": "https://new1direction.github.io/ningen-shikkaku/",
+  "version": "0.1.0",
+  "packages": [
+    {
+      "registryType": "mcpb",
+      "identifier": "https://github.com/New1Direction/ningen-shikkaku/releases/download/v0.1.0/motokano-0.1.0.mcpb",
+      "version": "0.1.0",
+      "fileSha256": "d2b25898f41083f50a384bf3a68e328e35d41f589d6b276d6c884082fa335afc",
+      "transport": {
+        "type": "stdio"
+      }
+    }
+  ]
+}
