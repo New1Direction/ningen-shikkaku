@@ -5,12 +5,8 @@ posting anywhere.
 
 ## Release plumbing
 
-- [ ] **Create the Homebrew tap repo** (must exist before the first tag):
-
-  ```bash
-  gh repo create New1Direction/homebrew-tap --public \
-    --description "Homebrew tap for dazai & motokano"
-  ```
+- [x] **Create the Homebrew tap repo** (must exist before the first tag):
+  done 2026-06-11 → https://github.com/New1Direction/homebrew-tap
 
 - [ ] **Add the tap token secret**: create a fine-grained PAT with
   `contents: write` on `New1Direction/homebrew-tap` only, then:
