@@ -3,6 +3,7 @@ name = "kikka"
 edition.workspace = true
 version.workspace = true
 license.workspace = true
+repository.workspace = true
 description = "Heartbeat listener + panic controller for dazai"
 
 [dependencies]

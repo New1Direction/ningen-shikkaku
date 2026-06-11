@@ -15,6 +15,8 @@ edition = "2021"
 version = "0.1.0"
 license = "MIT"
 description = "dazai Phase 2 — hardened Rust dead-man's-switch daemon"
+repository = "https://github.com/New1Direction/ningen-shikkaku"
+homepage = "https://new1direction.github.io/ningen-shikkaku/"
 
 [workspace.dependencies]
 libc = "0.2"
@@ -35,3 +37,8 @@ rei = { path = "crates/rei" }
 
 [profile.release]
 panic = "abort"
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"

@@ -3,6 +3,7 @@ name = "kekkai"
 edition.workspace = true
 version.workspace = true
 license.workspace = true
+repository.workspace = true
 description = "seccomp syscall allowlist for the dazai watchdog (Linux only, feature-flagged)"
 
 [dependencies]

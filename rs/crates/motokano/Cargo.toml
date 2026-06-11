@@ -3,6 +3,8 @@ name = "motokano"
 edition.workspace = true
 version.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
 description = "Self-immolating MCP server: serve N tool calls, then wipe state and exit"
 
 [[bin]]

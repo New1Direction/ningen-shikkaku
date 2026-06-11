@@ -3,6 +3,8 @@ name = "dazai"
 edition.workspace = true
 version.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
 description = "dazai Phase 2 CLI — hardened dead-man's-switch daemon"
 
 [[bin]]
