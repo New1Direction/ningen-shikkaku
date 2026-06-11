@@ -8,15 +8,9 @@ posting anywhere.
 - [x] **Create the Homebrew tap repo** (must exist before the first tag):
   done 2026-06-11 → https://github.com/New1Direction/homebrew-tap
 
-- [ ] **Add the tap token secret**: create a fine-grained PAT with
-  `contents: write` on `New1Direction/homebrew-tap` only, then:
-
-  ```bash
-  gh secret set HOMEBREW_TAP_TOKEN --repo New1Direction/ningen-shikkaku
-  ```
-
-  (cargo-dist's release workflow expects `HOMEBREW_TAP_TOKEN` to push the
-  formulas.)
+- [x] **Add the tap token secret**: done 2026-06-11 — fine-grained PAT
+  (`contents: write` on the tap only) stored as `HOMEBREW_TAP_TOKEN` on
+  ningen-shikkaku. Earlier leaked tokens revoked.
 
 - [ ] **Push main** (all launch commits): `git push origin main`
 - [ ] **Verify CI is green** on the pushed commit.
