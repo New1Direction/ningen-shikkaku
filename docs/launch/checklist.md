@@ -43,10 +43,13 @@ posting anywhere.
   release; `server.json` at repo root). Future releases: build the new .mcpb,
   update version + fileSha256 in server.json, `mcp-publisher login github &&
   mcp-publisher publish`.
-- [ ] Smithery (web UI, human-only): sign in with GitHub at smithery.ai →
-  Add server → point at the repo, use the motokano command from
-  [registries.md](registries.md).
-- [ ] mcp.so + awesome-mcp-servers PR per [registries.md](registries.md).
+- [x] **smithery.yaml** committed (local stdio config). Smithery's web form
+  only takes hosted HTTP servers — dazai is local-only by design, so no
+  hosted listing; aggregators mirror the official registry anyway.
+- [x] **mcp.so**: submission filed 2026-06-11 →
+  https://github.com/chatmcp/mcpso/issues/2760
+- [x] **awesome-mcp-servers**: PR filed 2026-06-11 (agent fast-track) →
+  https://github.com/punkpeye/awesome-mcp-servers/pull/7879
 
 ## ---------------- Show HN line ----------------
 
