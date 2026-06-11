@@ -1,0 +1,32 @@
+# Smithery configuration — local stdio server.
+# motokano must be installed first:
+#   brew install New1Direction/tap/motokano
+# (or the curl installer / cargo build — see README)
+startCommand:
+  type: stdio
+  configSchema:
+    type: object
+    required: [secretValue]
+    properties:
+      secretValue:
+        type: string
+        description: >-
+          The secret to serve. Held in locked, non-swappable RAM and destroyed
+          after the configured number of reads. Must not contain commas.
+      secretName:
+        type: string
+        default: get_key
+        description: Name of the MCP tool that serves the secret.
+      calls:
+        type: number
+        default: 1
+        description: How many reads to serve before wiping and exiting.
+  commandFunction: |-
+    (config) => ({
+      command: 'motokano',
+      args: [
+        '--calls', String(config.calls ?? 1),
+        '--arm',
+        '--tool', `name=${config.secretName ?? 'get_key'},kind=static,value=${config.secretValue}`
+      ]
+    })
