@@ -12,17 +12,18 @@ posting anywhere.
   (`contents: write` on the tap only) stored as `HOMEBREW_TAP_TOKEN` on
   ningen-shikkaku. Earlier leaked tokens revoked.
 
-- [ ] **Push main** (all launch commits): `git push origin main`
-- [ ] **Verify CI is green** on the pushed commit.
-- [ ] **Tag and release**:
-
-  ```bash
-  git tag v0.1.0 && git push origin v0.1.0
-  ```
-
-- [ ] **Verify the release workflow**: GitHub Release `v0.1.0` exists with
-  `dazai-installer.sh`, `motokano-installer.sh`, 4 tarballs per app +
-  checksums; `dazai.rb` + `motokano.rb` landed in the tap.
+- [x] **Push main**: done 2026-06-11, CI green.
+- [x] **Tag and release**: `v0.1.0` released 2026-06-11 — all 4 targets,
+  installers + checksums live.
+- [x] **Formulas in the tap**: pushed manually for v0.1.0 (the PAT couldn't
+  write to the tap; publish job 403'd twice).
+  **⚠ Before the next release: fix the `HOMEBREW_TAP_TOKEN` PAT** —
+  Repository access must include `New1Direction/homebrew-tap` AND
+  Permissions → Contents = Read and write — or the publish job will fail
+  again and the formulas will go stale.
+- [x] **Install test**: `brew install New1Direction/tap/{dazai,motokano}`
+  verified 2026-06-11 — binaries 0.1.0 on PATH, burn demo passes against the
+  brew-installed motokano.
 - [ ] **Clean-machine install test** (at minimum: a fresh shell on another
   Mac/Linux box or container):
 
