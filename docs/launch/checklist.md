@@ -38,8 +38,15 @@ posting anywhere.
 
 ## Listings
 
-- [ ] Registry submissions per [registries.md](registries.md) (official,
-  Smithery, mcp.so, awesome-mcp-servers PR).
+- [x] **Official MCP registry**: `io.github.New1Direction/motokano` 0.1.0
+  published 2026-06-11 (MCPB bundle `motokano-0.1.0.mcpb` attached to the
+  release; `server.json` at repo root). Future releases: build the new .mcpb,
+  update version + fileSha256 in server.json, `mcp-publisher login github &&
+  mcp-publisher publish`.
+- [ ] Smithery (web UI, human-only): sign in with GitHub at smithery.ai →
+  Add server → point at the repo, use the motokano command from
+  [registries.md](registries.md).
+- [ ] mcp.so + awesome-mcp-servers PR per [registries.md](registries.md).
 
 ## ---------------- Show HN line ----------------
 
