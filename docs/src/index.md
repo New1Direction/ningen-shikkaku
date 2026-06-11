@@ -19,23 +19,34 @@
 [![docs](https://img.shields.io/badge/docs-ningen--shikkaku-c0392b)](https://new1direction.github.io/ningen-shikkaku/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/New1Direction/ningen-shikkaku/blob/main/LICENSE)
 
-**Secrets that live only as long as you do** — a session-bound, memory-zeroizing dead-man's-switch that pins secrets in locked, non-swappable RAM and, the instant your session dies, wipes them and `SIGKILL`s the processes holding them.
+**Burn-after-reading secrets for AI agents** — keys live in locked,
+non-swappable RAM, are served to agents over MCP, and are destroyed after N
+reads, or the instant your session dies. Walk away: agents die, secrets burn.
 
 ## Install
 
 ```bash
-git clone https://github.com/New1Direction/ningen-shikkaku
-cd ningen-shikkaku/rs
-cargo build --release          # → target/release/{dazai, motokano}
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/New1Direction/ningen-shikkaku/releases/latest/download/dazai-installer.sh | sh
+# or: brew install New1Direction/tap/dazai New1Direction/tap/motokano
 ```
 
-## See it in one line
+## See it burn
+
+![burn-after-reading demo](assets/burn.gif)
 
 ```bash
 motokano --calls 1 --tool 'name=get_key,kind=static,value=s3cr3t' --arm
 ```
 
-Point any MCP client at it and call `get_key` **once** → you receive `s3cr3t` → it wipes the value out of locked memory and `SIGKILL`s itself. Call again → the process is gone.
+One read → the secret. Second read → the server has already wiped the value
+out of locked memory and `SIGKILL`ed itself.
+
+## Wire it into an agent
+
+```bash
+claude mcp add burn-once -- motokano --calls 1 --arm \
+  --tool 'name=get_key,kind=static,value=YOUR-SECRET'
+```
 
 ## Start here
 
