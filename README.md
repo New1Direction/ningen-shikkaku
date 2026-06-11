@@ -1,20 +1,80 @@
-# daZai
+# dazai
 
 [![CI](https://github.com/New1Direction/ningen-shikkaku/actions/workflows/ci.yml/badge.svg)](https://github.com/New1Direction/ningen-shikkaku/actions/workflows/ci.yml)
 [![docs](https://img.shields.io/badge/docs-ningen--shikkaku-c0392b)](https://new1direction.github.io/ningen-shikkaku/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-**Secrets that live only as long as you do.**
+**Burn-after-reading secrets for AI agents.**
 
-daZai is a session-bound, memory-zeroizing dead-man's-switch. It pins secret
-material into locked, non-swappable RAM, holds a liveness channel tied to your
-shell or SSH session, and the moment that liveness is lost — you log out, the
-connection drops, a panic signal arrives, or a daemon it's watching dies — it
-overwrites the secrets with a wipe the compiler can't optimize away and
-`SIGKILL`s the processes holding them.
+Your MCP configs are full of plaintext API keys, and every agent you run can
+read all of them — and they keep working long after the agent is done. dazai
+inverts that: secrets live in locked, non-swappable RAM, are served to agents
+over MCP, and are **destroyed after N reads — or the instant your session
+dies**.
+
+![burn-after-reading demo](docs/src/assets/burn.gif)
+
+```bash
+motokano --calls 1 --tool 'name=get_key,kind=static,value=s3cr3t' --arm
+```
+
+Point any MCP client at it and call `get_key` **once** → you receive `s3cr3t`
+→ the server wipes the value out of locked memory and `SIGKILL`s itself. Call
+again → the process is gone.
+
+## Install
+
+```bash
+# prebuilt binaries (macOS arm64/x86_64, Linux x86_64/arm64)
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/New1Direction/ningen-shikkaku/releases/latest/download/dazai-installer.sh | sh
+
+# or homebrew
+brew install New1Direction/tap/dazai New1Direction/tap/motokano
+
+# or from source (required for the Linux seccomp build)
+git clone https://github.com/New1Direction/ningen-shikkaku
+cd ningen-shikkaku/rs
+cargo build --release                       # -> target/release/{dazai, motokano}
+cargo build --release --features seccomp    # Linux: seccomp syscall allowlist
+```
+
+Prebuilt binaries are built with default features; the seccomp-confined daemon
+is a from-source build (it links libseccomp — install `libseccomp-dev` +
+`pkg-config` first).
+
+## Use it with Claude Code
+
+```bash
+# a one-shot secret an agent can read exactly once:
+claude mcp add burn-once -- motokano --calls 1 --arm \
+  --tool 'name=get_key,kind=static,value=YOUR-SECRET'
+
+# or the session-bound daemon: agents register their PID and get SIGKILLed
+# the moment your session dies
+dazai daemon --arm --grace 5 &
+claude mcp add dazai -- dazai mcp
+```
+
+Any MCP client works the same way — the transport is plain stdio.
+
+## And the second act: a dead-man's switch for your agents
+
+The same daemon is a session kill-switch. Any MCP client registers its PID;
+when your shell/SSH session dies, your heartbeat stops, or a panic signal
+arrives, dazai `SIGKILL`s every registered process, overwrites its secrets
+with a wipe the compiler can't optimize away, and exits. Walk away: agents
+die, secrets burn.
+
+```bash
+dazai daemon --ping-timeout 15        # terminal A  (dry-run by default; --arm makes it real)
+dazai client --interval 5             # terminal B
+# close terminal B  ->  the daemon wipes its secrets and exits
+```
 
 It runs **only on your own machine, on your own secrets and your own configured
 tools**. It never touches another process, file, or host.
+
+## What's in the box
 
 It ships in two layers:
 
@@ -25,8 +85,6 @@ It ships in two layers:
 - a **Python reference implementation** — the original proof-of-concept that
   established the mechanism (see [`python-reference.md`](python-reference.md)).
 
-## What's in the box
-
 | Component | What it does |
 |---|---|
 | `dazai daemon` | The watchdog: holds `mlock`'d secrets + a UNIX-socket heartbeat; wipes and self-destructs on session loss. seccomp-confined on Linux. |
@@ -34,41 +92,6 @@ It ships in two layers:
 | `dazai mcp` | An MCP server exposing the daemon as tools, so any agent can register its PID for session-bound protection (it gets `SIGKILL`ed if your session dies). |
 | `motokano` | A standalone **self-immolating** MCP server: serve N tool calls, then wipe secret state and exit. |
 | Python reference | `secmem.py` / `deadman.py` / `heartbeat.py` / `shellrc.sh` — the portable proof-of-concept. |
-
-## Install
-
-Needs a recent Rust toolchain. On Linux, install `libseccomp-dev` + `pkg-config`
-to build the seccomp-confined daemon.
-
-```bash
-git clone https://github.com/New1Direction/ningen-shikkaku
-cd ningen-shikkaku/rs
-cargo build --release                       # -> target/release/{dazai, motokano}
-cargo build --release --features seccomp    # Linux: with the seccomp allowlist
-```
-
-## Demo
-
-A self-destructing one-shot secret server, in one line:
-
-```bash
-motokano --calls 1 \
-  --tool 'name=get_key,kind=static,value=s3cr3t' \
-  --arm
-```
-
-Point any MCP client at it and call `get_key` **once** → you receive `s3cr3t` →
-the server wipes the value out of locked memory and `SIGKILL`s itself. Call
-again → the process is gone.
-
-Or the session-coupled daemon (dry-run is the safe default; `--arm` makes it
-real):
-
-```bash
-dazai daemon --ping-timeout 15        # terminal A
-dazai client --interval 5             # terminal B
-# close terminal B  ->  the daemon wipes its secrets and exits
-```
 
 ## Threat model
 
