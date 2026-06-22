@@ -95,6 +95,33 @@ It ships in two layers:
 | `motokano` | A standalone **self-immolating** MCP server: serve N tool calls, then wipe secret state and exit. |
 | Python reference | `secmem.py` / `deadman.py` / `heartbeat.py` / `shellrc.sh` — the portable proof-of-concept. |
 
+## Architecture
+
+```mermaid
+flowchart LR
+    A["MCP client / AI agent<br/>(stdio transport)"]
+
+    subgraph Daemon["dazai daemon (kikka Watchdog)"]
+        D["dazai daemon<br/>mlock'd SecretBuffers (goodnight)<br/>seccomp-confined on Linux (kekkai)"]
+        SOCK[("UNIX socket 0600<br/>HELLO heartbeat + REGISTER / ARM / STATUS")]
+    end
+
+    MCPD["dazai mcp<br/>(rei · rmcp server)"]
+    HB["dazai client<br/>(heartbeat: HELLO / PING)"]
+    MOTO["motokano<br/>(self-immolating MCP server)<br/>static values in SecretBuffer"]
+    KILL{{"wipe (explicit_bzero / memset_s)<br/>+ SIGKILL"}}
+
+    A -->|"register pid / status / panic"| MCPD
+    A -->|"get_key (static, N reads)"| MOTO
+    MCPD -->|"relay verbs + signals via pidfile"| SOCK
+    HB -->|"holds liveness connection"| SOCK
+    SOCK --- D
+    MOTO -. "optional --dazai-socket: register + monitor" .-> SOCK
+    D ==>|"on trigger: SIGKILL registered PIDs, then wipe + self-SIGKILL"| KILL
+    MOTO ==>|"after N calls / EOF / daemon death: wipe + exit"| KILL
+    HB -. "drop / ping-timeout / panic signal" .-> D
+```
+
 ## Threat model
 
 daZai shrinks the *window* and the *surface* in which plaintext secrets are
