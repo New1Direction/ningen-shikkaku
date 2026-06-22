@@ -1,10 +1,12 @@
-# dazai
+# ningen-shikkaku
 
 [![CI](https://github.com/New1Direction/ningen-shikkaku/actions/workflows/ci.yml/badge.svg)](https://github.com/New1Direction/ningen-shikkaku/actions/workflows/ci.yml)
 [![docs](https://img.shields.io/badge/docs-ningen--shikkaku-c0392b)](https://new1direction.github.io/ningen-shikkaku/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 **Burn-after-reading secrets for AI agents.**
+
+`ningen-shikkaku` ships two small Rust binaries — **`dazai`** (the session-bound daemon) and **`motokano`** (a self-immolating one-shot MCP server).
 
 Your MCP configs are full of plaintext API keys, and every agent you run can
 read all of them — and they keep working long after the agent is done. dazai
