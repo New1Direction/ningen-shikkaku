@@ -129,8 +129,8 @@ tamper-evident ledger: `--korg-sink PATH` (or `/dev/fd/N` for a pre-opened
 descriptor) appends one Korg append-shape record per arm, session, read, wipe
 and kill step. Records carry only fixed-vocabulary fields and counters. Secret
 values, lengths, digests, tool names, arguments, paths and the environment are
-never recorded. Korg assigns sequence numbers, hashes and signatures on
-ingest. See [Korg lifecycle records](https://new1direction.github.io/ningen-shikkaku/reference/korg.html).
+never recorded. Korg imports the file through its `ningen-shikkaku.lifecycle@v2`
+envelope profile and assigns sequence numbers, hashes and signatures. See [Korg lifecycle records](https://new1direction.github.io/ningen-shikkaku/reference/korg.html).
 
 ## Threat model
 

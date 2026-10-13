@@ -1,16 +1,37 @@
 # Korg lifecycle records
 
-`dazai daemon` and `motokano` can append a **non-secret lifecycle record** for every arm, session, read, wipe and kill step to a sink that [Korg](https://github.com/New1Direction/korg) ingests. The contract is `ningen-korg-lifecycle@1`, implemented by the `kiroku` crate. It is narrow on purpose. ningen-shikkaku reports *that* something happened, and Korg decides *where* it goes in a tamper-evident ledger.
+`dazai daemon` and `motokano` can append a **non-secret lifecycle record** for every arm, session, read, wipe and kill step to a sink that [Korg](https://github.com/New1Direction/korg) imports. The contract is `ningen-korg-lifecycle@1`, implemented by the `kiroku` crate. It is narrow on purpose. ningen-shikkaku reports *that* something happened, and Korg decides *where* it goes in a tamper-evident ledger.
 
 ```bash
-dazai daemon --arm --korg-sink ~/.korg/inbox/dazai.jsonl
-motokano --calls 1 --tool 'name=get_key,kind=static,value=…' --korg-sink ~/.korg/inbox/motokano.jsonl
+dazai daemon --arm --korg-sink dazai-run.jsonl
+motokano --calls 1 --tool 'name=get_key,kind=static,value=…' --korg-sink motokano-run.jsonl
 
 # pre-opened descriptor: the parent opens it, the daemon never opens a path
-dazai daemon --arm --korg-sink /dev/fd/3 3>>~/.korg/inbox/dazai.jsonl
+dazai daemon --arm --korg-sink /dev/fd/3 3>>dazai-run.jsonl
 ```
 
 The flag is opt-in. Without it, nothing is written.
+
+## Getting the records into Korg
+
+Korg takes outside evidence only through its allowlisted import envelopes
+([`korg-import@v1`](https://github.com/New1Direction/korg/blob/main/spec/korg-ledger-v1/IMPORT.md)).
+The profile for this sink is `ningen-shikkaku.lifecycle@v2`. Once the process
+has exited:
+
+```bash
+# from a Korg checkout (korg-ledger-py)
+python -m korg_ledger envelope ningen-sink dazai-run.jsonl > dazai-run.envelope.json
+python -m korg_ledger import dazai-run.envelope.json --ledger .korg/ledger.jsonl
+python -m korg_ledger lint .korg/ledger.jsonl    # chain + causal DAG + redaction
+```
+
+Korg rechecks every record against the profile's allowlist and its redaction
+scanner. If any record fails, the whole envelope is rejected and nothing is
+appended. Imported events appear as `ningen-shikkaku.<step>` under
+`source_agent = "import:ningen-shikkaku@<version>"`, hanging off one
+`korg.import` batch event that records the envelope's SHA-256. Use one sink file
+per run, or rotate it, so a later import doesn't repeat records.
 
 ## Who owns what
 
@@ -20,7 +41,7 @@ The flag is opt-in. Without it, nothing is written.
 | a random per-process `session` id and a wall-clock `observed_unix_ms` | per-event `event_sig` (Ed25519), external anchors, korgcert seals |
 | nothing else | causal links (`triggered_by`): records are emitted as roots |
 
-Records never contain `seq_id`, any hash, a signature or `triggered_by`. The validator in `kiroku::contract` rejects a record that carries any of them. Each line deserializes as Korg's public `korg_core::event::NormalizedEvent` (the `POST /api/agent/tool-call` body). The extra `event_type: "AgentToolCall"` that [agent_event_spec §1.2.1](https://github.com/New1Direction/korg/blob/main/agent_event_spec.md) asks for is ignored by that type. The test suite checked that Korg's reference `LedgerWriter` chains these lines and that `verify_chain` and `verify_dag` both come back empty.
+Records never contain `seq_id`, any hash, a signature or `triggered_by`. The validator in `kiroku::contract` rejects a record that carries any of them. Each line deserializes as Korg's public `korg_core::event::NormalizedEvent` (the `POST /api/agent/tool-call` body). The extra `event_type: "AgentToolCall"` that [agent_event_spec §1.2.1](https://github.com/New1Direction/korg/blob/main/agent_event_spec.md) asks for is ignored by that type. Korg's import tests run on real sink output from both binaries and check that the projection, import and lint all pass.
 
 ## Record shape
 
@@ -69,11 +90,11 @@ The tests enforce this from three directions:
 - The sink is opened, and the session id read from `/dev/urandom`, **before** seccomp is applied: `openat` is denied afterwards. From then on, each record costs one `write(2)` on the existing descriptor, and the filter allows that.
 - The descriptor is opened `O_APPEND | O_NONBLOCK | O_CLOEXEC`, created `0600` if it doesn't exist. Records are at most 512 bytes (the POSIX `PIPE_BUF` minimum), so one write to a pipe is atomic.
 - **The kill path never waits on Korg.** If a pipe's reader stalls, records are dropped (and counted), never half-written, and the wipe/kill continues. If the sink is a FIFO with no reader, startup fails instead of hanging. If the sink can't be opened, the process refuses to start before it loads any secret.
-- `/dev/fd/N` writes to a descriptor the parent pre-opened. That descriptor can be a file, a pipe into a Korg ingester, or an inbox the offline Korg tooling picks up later.
+- `/dev/fd/N` writes to a descriptor the parent pre-opened. That descriptor can be a file or a pipe into a process that collects the records for import.
 
 ## Honest limits
 
 - Records are **best-effort telemetry**: a hard crash (OOM, external `kill -9`, power loss) can end the process before a step is recorded, the same way it skips the wipe.
-- The sink file itself is not tamper-evident. Integrity starts when Korg ingests and chains the records. A same-UID process could edit or truncate the file before then.
+- The sink file itself is not tamper-evident. Integrity starts when Korg imports and chains the records. A same-UID process could edit or truncate the file before then.
 - `observed_unix_ms` is the local wall clock (Korg's HLC remains the ordering authority), and `session` only correlates records from one process run.
 - `dazai mcp` (rei) only relays to the daemon. The daemon writes the records.

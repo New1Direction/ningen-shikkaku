@@ -13,7 +13,7 @@ ningen-shikkaku is deliberately honest about where it stops. None of these are b
 
 ## Korg lifecycle records
 
-[`--korg-sink`](./korg.md) records are best-effort telemetry. A hard crash can end the process before a step is recorded, and the sink file isn't tamper-evident until Korg ingests and chains it. The records never carry secrets, tool names, arguments, paths or digests.
+[`--korg-sink`](./korg.md) records are best-effort telemetry. A hard crash can end the process before a step is recorded, and the sink file isn't tamper-evident until Korg imports and chains it. The records never carry secrets, tool names, arguments, paths or digests.
 
 ## Platform gaps
 
