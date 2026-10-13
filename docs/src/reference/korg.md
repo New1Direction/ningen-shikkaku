@@ -47,7 +47,7 @@ Records never contain `seq_id`, any hash, a signature or `triggered_by`. The val
 
 ```json
 {"args":{"component":"dazai","contract":"ningen-korg-lifecycle@1","count":1,"observed_unix_ms":1791903342673,
- "producer":"ningen-shikkaku@0.1.0","reason":"heartbeat_lost","session":"5e920c9280150ac7f2d2577346e1edbe",
+ "producer":"ningen-shikkaku@0.2.0","reason":"heartbeat_lost","session":"5e920c9280150ac7f2d2577346e1edbe",
  "target":"registered"},"duration_ms":0,"event_type":"AgentToolCall","payload_refs":[],
  "result":{"executed":true},"source_agent":"mcp:dazai","success":true,"tool_name":"ningen.kill"}
 ```
