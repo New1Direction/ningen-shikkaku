@@ -31,6 +31,8 @@ sienna      LLM child wrapper: parent spawns (fork+exec via Command), owns the P
 kekkai      Linux seccomp allowlist (feature `seccomp`); no-op stub elsewhere.
 rei         MCP server (rmcp) exposing the daemon as tools any agent can use.
 motokano    Self-immolating MCP server: serve N tool calls, then wipe + exit.
+kiroku      Non-secret Korg lifecycle records (append-shape JSONL, `--korg-sink`);
+            closed-enum events, pre-seccomp open, one write(2) per record.
 dazai       CLI binary: `daemon`, `client`, and `mcp` subcommands.
 ```
 
@@ -250,6 +252,14 @@ cargo fmt --check
   one-shot guard; **registered → wipe → self ordering**) — all via injected fakes.
 - `sienna`: spawn/pid/kill/Drop.
 - `kekkai`: allowlist contents and dangerous-syscall omission.
+- `kiroku`: every expressible lifecycle record validated against the strict
+  `ningen-korg-lifecycle@1` allowlist; validator rejects Korg-owned fields and
+  free-form strings; stalled-pipe sink drops whole records instead of blocking.
+- Korg sink integration (`dazai`, `motokano`): exact record sequences for armed,
+  dry-run and clean exits (dazai's under the live seccomp filter via a
+  pre-opened `/dev/fd/3`); canary leak scans (raw/hex/base64/SHA-256); and a
+  noninterference check that records are byte-identical across different
+  secrets.
 - `rei`: client logic against a **mock daemon** (status/register/unregister/
   arm), and panic/hard-panic against an **injected fake signal sender** — no live
   daemon needed.

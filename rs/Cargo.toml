@@ -8,6 +8,7 @@ members = [
     "crates/sienna",
     "crates/rei",
     "crates/motokano",
+    "crates/kiroku",
 ]
 
 [workspace.package]
@@ -34,6 +35,7 @@ kikka = { path = "crates/kikka" }
 sienna = { path = "crates/sienna" }
 kekkai = { path = "crates/kekkai" }
 rei = { path = "crates/rei" }
+kiroku = { path = "crates/kiroku" }
 
 [profile.release]
 panic = "abort"

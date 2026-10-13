@@ -72,7 +72,7 @@ impl DazaiLink {
                     Err(_) => break,   // timeout (no PONG) or error: daemon gone
                 }
             }
-            wipe_and_exit(&ctx);
+            wipe_and_exit(&ctx, kiroku::Reason::DaemonLost);
         });
     }
 

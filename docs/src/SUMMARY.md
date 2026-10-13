@@ -33,4 +33,5 @@
 - [configuration](./reference/config.md)
 - [socket protocol](./reference/protocol.md)
 - [MCP tools](./reference/mcp-tools.md)
+- [Korg lifecycle records](./reference/korg.md)
 - [honest limitations](./reference/limitations.md)

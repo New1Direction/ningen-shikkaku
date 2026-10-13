@@ -16,7 +16,7 @@
 mod panic;
 pub use panic::PanicController;
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::io::{BufReader, ErrorKind, Read, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -30,6 +30,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use goodnight::SecretBuffer;
+use kiroku::{ArmVia, KillTarget, Lifecycle, Reason, Sink};
 use signal_hook::consts::{SIGINT, SIGTERM, SIGUSR1, SIGUSR2};
 use signal_hook::iterator::Signals;
 
@@ -87,6 +88,8 @@ pub struct WatchdogConfig {
     pub grace: Duration,
     /// Optional missed-ping deadline (`None` = rely on connection liveness).
     pub ping_timeout: Option<Duration>,
+    /// Optional Korg lifecycle sink, opened before seccomp (see `kiroku`).
+    pub lifecycle: Option<Arc<Sink>>,
 }
 
 /// Per-connection context handed to control-connection handlers (clone-cheap).
@@ -97,6 +100,8 @@ struct ConnCtx {
     grace: Duration,
     /// In-flight control connections, to bound concurrent reader threads.
     control_count: Arc<AtomicUsize>,
+    /// Korg lifecycle sink (runtime `ARM` is recorded).
+    lifecycle: Option<Arc<Sink>>,
 }
 
 /// The watchdog: owns the socket, the secret buffers, and the panic controller.
@@ -109,6 +114,9 @@ pub struct Watchdog {
     armed: Arc<AtomicBool>,
     /// PIDs registered for SIGKILL-on-trigger, shared with control handlers.
     registered: RegisteredPids,
+    /// The trigger currently driving the controller, recorded on the Korg
+    /// lifecycle records its wipe/kill closures emit.
+    trigger: Rc<Cell<Reason>>,
 }
 
 impl Watchdog {
@@ -122,11 +130,17 @@ impl Watchdog {
         let stop = Arc::new(AtomicBool::new(false));
         let armed = Arc::new(AtomicBool::new(config.armed));
         let registered: RegisteredPids = Arc::new(Mutex::new(Vec::new()));
+        let trigger = Rc::new(Cell::new(Reason::Shutdown));
 
         // kill_registered: SIGKILL every registered PID. Runs first on an armed
         // trigger, before the buffer wipe. Reads the list the control handlers
         // maintain; recovers a poisoned lock rather than panicking.
+        // Lifecycle records are written after each step completes and before
+        // the next, so the sink mirrors the real order (kill holders -> wipe
+        // -> self-kill). The self-kill record must precede `raise(SIGKILL)`.
+        let sink = config.lifecycle.clone();
         let reg_kill = Arc::clone(&registered);
+        let (kr_sink, kr_trigger) = (sink.clone(), Rc::clone(&trigger));
         let kill_registered = Box::new(move || {
             let pids = reg_kill.lock().unwrap_or_else(|p| p.into_inner());
             for &pid in pids.iter() {
@@ -136,20 +150,74 @@ impl Watchdog {
                     if killed { "sent" } else { "already gone" }
                 );
             }
+            kiroku::emit(
+                kr_sink.as_deref(),
+                Lifecycle::Kill {
+                    reason: kr_trigger.get(),
+                    target: KillTarget::Registered,
+                    count: count_u32(pids.len()),
+                    executed: true,
+                },
+            );
         }) as Box<dyn FnMut()>;
 
         let wipe_bufs = Rc::clone(&buffers);
+        let (w_sink, w_trigger) = (sink.clone(), Rc::clone(&trigger));
         let wipe = Box::new(move || {
             let mut bufs = wipe_bufs.borrow_mut();
             for buf in bufs.iter_mut() {
                 buf.wipe();
             }
             eprintln!("[dazai] wiped {} secret buffer(s)", bufs.len());
+            kiroku::emit(
+                w_sink.as_deref(),
+                Lifecycle::Wipe {
+                    reason: w_trigger.get(),
+                    buffers: count_u32(bufs.len()),
+                },
+            );
         }) as Box<dyn FnMut()>;
 
+        let (k_sink, k_trigger) = (sink.clone(), Rc::clone(&trigger));
+        let mut lethal = kill;
+        let kill = Box::new(move || {
+            kiroku::emit(
+                k_sink.as_deref(),
+                Lifecycle::Kill {
+                    reason: k_trigger.get(),
+                    target: KillTarget::SelfProcess,
+                    count: 1,
+                    executed: true,
+                },
+            );
+            lethal();
+        }) as Box<dyn FnMut()>;
+
+        // Dry-run: record what an armed trigger WOULD have killed.
         let stop_flag = Arc::clone(&stop);
-        let dry_done =
-            Box::new(move || stop_flag.store(true, Ordering::SeqCst)) as Box<dyn FnMut()>;
+        let reg_dry = Arc::clone(&registered);
+        let (d_sink, d_trigger) = (sink, Rc::clone(&trigger));
+        let dry_done = Box::new(move || {
+            let would = reg_dry
+                .lock()
+                .map(|g| g.len())
+                .unwrap_or_else(|p| p.into_inner().len());
+            for (target, count) in [
+                (KillTarget::Registered, count_u32(would)),
+                (KillTarget::SelfProcess, 1),
+            ] {
+                kiroku::emit(
+                    d_sink.as_deref(),
+                    Lifecycle::Kill {
+                        reason: d_trigger.get(),
+                        target,
+                        count,
+                        executed: false,
+                    },
+                );
+            }
+            stop_flag.store(true, Ordering::SeqCst)
+        }) as Box<dyn FnMut()>;
 
         let clock = Box::new(Instant::now) as Box<dyn Fn() -> Instant>;
         let log = Box::new(|m: &str| eprintln!("[dazai] {m}")) as Box<dyn Fn(&str)>;
@@ -172,7 +240,14 @@ impl Watchdog {
             stop,
             armed,
             registered,
+            trigger,
         }
+    }
+
+    /// Point the lifecycle records at `reason`, then return the controller.
+    fn triggered(&mut self, reason: Reason) -> &mut PanicController {
+        self.trigger.set(reason);
+        &mut self.controller
     }
 
     fn bind(&self) -> Result<UnixListener> {
@@ -251,6 +326,7 @@ impl Watchdog {
             armed: Arc::clone(&self.armed),
             grace: self.config.grace,
             control_count: Arc::new(AtomicUsize::new(0)),
+            lifecycle: self.config.lifecycle.clone(),
         };
         thread::spawn(move || {
             for conn in listener.incoming() {
@@ -270,6 +346,22 @@ impl Watchdog {
         });
 
         self.banner();
+        let sink = self.config.lifecycle.clone();
+        let armed_at_start = self.armed.load(Ordering::SeqCst);
+        kiroku::emit(
+            sink.as_deref(),
+            Lifecycle::SessionStart {
+                armed: armed_at_start,
+            },
+        );
+        if armed_at_start {
+            kiroku::emit(
+                sink.as_deref(),
+                Lifecycle::Arm {
+                    via: ArmVia::Startup,
+                },
+            );
+        }
 
         // Authoritative liveness state, owned by this single thread. `present`
         // is whether a client is currently connected; `current_gen` is its
@@ -278,9 +370,13 @@ impl Watchdog {
         // Connected/HeartbeatLost channel reorder safe.
         let mut current_gen: u64 = 0;
         let mut present = false;
+        // Why the loop ended (a dry-run trigger ends it via the stop flag, in
+        // which case the trigger itself is the reason).
+        let mut end = Reason::Shutdown;
 
         loop {
             if self.stop.load(Ordering::SeqCst) {
+                end = self.trigger.get();
                 break;
             }
             let now = Instant::now();
@@ -301,7 +397,7 @@ impl Watchdog {
                 Ok(Event::HeartbeatLost(g)) => {
                     if present && g == current_gen {
                         present = false;
-                        self.controller
+                        self.triggered(Reason::HeartbeatLost)
                             .request_graceful("heartbeat connection dropped");
                     }
                     // else: stale loss from a superseded connection -> ignore.
@@ -309,7 +405,8 @@ impl Watchdog {
                 Ok(Event::PingTimeout(g)) => {
                     if present && g == current_gen {
                         present = false;
-                        self.controller.request_graceful("ping deadline missed");
+                        self.triggered(Reason::PingTimeout)
+                            .request_graceful("ping deadline missed");
                     }
                 }
                 Ok(Event::Cancel) => {
@@ -317,13 +414,16 @@ impl Watchdog {
                 }
                 Ok(Event::Quit) => {
                     eprintln!("[dazai] client QUIT: intentional clean stand-down");
+                    end = Reason::ClientQuit;
                     break;
                 }
                 Ok(Event::Signal(s)) if s == SIGUSR1 => {
-                    self.controller.request_graceful("SIGUSR1 panic signal");
+                    self.triggered(Reason::PanicSignal)
+                        .request_graceful("SIGUSR1 panic signal");
                 }
                 Ok(Event::Signal(s)) if s == SIGUSR2 => {
-                    self.controller.request_hard("SIGUSR2 hard panic");
+                    self.triggered(Reason::HardPanicSignal)
+                        .request_hard("SIGUSR2 hard panic");
                 }
                 Ok(Event::Signal(_)) => {
                     eprintln!("[dazai] SIGTERM/SIGINT: clean shutdown (zeroize, no kill)");
@@ -336,22 +436,40 @@ impl Watchdog {
             }
         }
 
-        self.cleanup();
+        self.cleanup(end);
         Ok(())
     }
 
-    fn cleanup(&mut self) {
+    fn cleanup(&mut self, end: Reason) {
         // Always wipe on the way out, even for a clean shutdown.
-        {
+        let wiped = {
             let mut bufs = self.buffers.borrow_mut();
             for buf in bufs.iter_mut() {
                 buf.wipe();
             }
+            bufs.len()
+        };
+        let sink = self.config.lifecycle.as_deref();
+        // A dry-run trigger already recorded its wipe; this one re-zeroes.
+        if !self.controller.has_fired() {
+            kiroku::emit(
+                sink,
+                Lifecycle::Wipe {
+                    reason: end,
+                    buffers: count_u32(wiped),
+                },
+            );
         }
+        kiroku::emit(sink, Lifecycle::SessionEnd { reason: end });
         if self.config.socket_path.exists() {
             let _ = std::fs::remove_file(&self.config.socket_path);
         }
     }
+}
+
+/// Saturating `usize` -> `u32` for lifecycle counters.
+fn count_u32(n: usize) -> u32 {
+    u32::try_from(n).unwrap_or(u32::MAX)
 }
 
 /// Read a single byte. `Ok(None)` is EOF; a read timeout surfaces as
@@ -605,6 +723,12 @@ fn process_control(line: &[u8], out: &mut UnixStream, ctx: &ConnCtx) -> bool {
             } else {
                 eprintln!(
                     "[dazai] ARMED at runtime via control message — self-destruct is now LIVE"
+                );
+                kiroku::emit(
+                    ctx.lifecycle.as_deref(),
+                    Lifecycle::Arm {
+                        via: ArmVia::Control,
+                    },
                 );
                 let _ = out.write_all(b"OK\n");
             }

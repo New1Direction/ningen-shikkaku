@@ -18,7 +18,7 @@ The daemon performs privileged setup in a fixed order, then confines itself befo
 2. `prctl(PR_SET_DUMPABLE, 0)` (Linux)
 3. allocate + `mlock` the secret buffers ([goodnight](./goodnight.md))
 4. spawn the LLM child if `--exec` ([sienna](./sienna.md))
-5. bind the `0600` UNIX socket + write the `0600` pidfile
+5. bind the `0600` UNIX socket + write the `0600` pidfile (the optional [`--korg-sink`](../reference/korg.md) is opened before this, after flag validation)
 6. apply seccomp ([kekkai](./kekkai.md), Linux + `seccomp` feature)
 7. enter the accept/event loop ([kikka](./kikka.md))
 

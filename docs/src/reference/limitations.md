@@ -11,6 +11,10 @@ ningen-shikkaku is deliberately honest about where it stops. None of these are b
 - **A hard crash** — kernel OOM, an external `kill -9`, power loss. The wipe path can't run, so nothing is zeroed. The mechanism is best-effort on these paths and never claims otherwise.
 ```
 
+## Korg lifecycle records
+
+[`--korg-sink`](./korg.md) records are best-effort telemetry. A hard crash can end the process before a step is recorded, and the sink file isn't tamper-evident until Korg ingests and chains it. The records never carry secrets, tool names, arguments, paths or digests.
+
 ## Platform gaps
 
 On non-Linux hosts, `madvise(MADV_DONTDUMP)`, `prctl(PR_SET_DUMPABLE, 0)`, and seccomp are **absent**. `mlock` and the non-elidable wipe still apply. The daemon prints a loud platform-guarantee notice at startup so this is never silent. See [running on Linux](../guides/linux.md).

@@ -11,6 +11,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use clap::{Parser, ValueEnum};
+use kiroku::{ArmVia, Component, Lifecycle, Reason, Sink};
 
 use motokano::counter::{CallCounter, CounterMode};
 use motokano::dazai::DazaiLink;
@@ -46,6 +47,10 @@ struct Cli {
     /// Wait N seconds after the final call before wipe+exit.
     #[arg(long, default_value_t = 0)]
     grace: u64,
+    /// Append non-secret Korg lifecycle records (JSONL) here; /dev/fd/N for a
+    /// descriptor the parent pre-opened.
+    #[arg(long = "korg-sink")]
+    korg_sink: Option<PathBuf>,
 }
 
 #[derive(Clone, ValueEnum)]
@@ -64,6 +69,15 @@ fn counter_mode(session: bool, calls: Option<usize>) -> CounterMode {
 }
 
 fn run(cli: Cli) -> Result<()> {
+    // 0. optional Korg lifecycle sink (fail before any secret is loaded)
+    let lifecycle = match &cli.korg_sink {
+        Some(path) => Some(Arc::new(
+            Sink::open(path, Component::Motokano)
+                .with_context(|| format!("opening --korg-sink {}", path.display()))?,
+        )),
+        None => None,
+    };
+
     // 1. tools
     let mut defs = Vec::new();
     for spec in &cli.tool {
@@ -87,7 +101,19 @@ fn run(cli: Cli) -> Result<()> {
         arm: cli.arm,
         grace: Duration::from_secs(cli.grace),
         closed: Arc::new(AtomicBool::new(false)),
+        lifecycle,
     });
+
+    let sink = exit.lifecycle.as_deref();
+    kiroku::emit(sink, Lifecycle::SessionStart { armed: cli.arm });
+    if cli.arm {
+        kiroku::emit(
+            sink,
+            Lifecycle::Arm {
+                via: ArmVia::Startup,
+            },
+        );
+    }
 
     if let Some(d) = &dazai {
         d.spawn_monitor(Arc::clone(&exit));
@@ -101,7 +127,7 @@ fn run(cli: Cli) -> Result<()> {
 
     // 6. serve returned => the client disconnected. Exit through the one path.
     let _ = counter.on_disconnect();
-    wipe_and_exit(&exit)
+    wipe_and_exit(&exit, Reason::ClientDisconnect)
 }
 
 fn main() -> ExitCode {

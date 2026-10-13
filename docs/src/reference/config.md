@@ -12,6 +12,7 @@ Every flag, by command.
 | `--socket PATH` | `${XDG_RUNTIME_DIR:-/tmp}/dazai-$UID.sock` | UNIX socket path (created `0600`) |
 | `--exec PATH` | none | spawn this as a supervised child ([sienna](../components/sienna.md)); killed first on trigger |
 | `--size BYTES` | `4096` | synthetic working-buffer size |
+| `--korg-sink PATH` | none | append non-secret [Korg lifecycle records](./korg.md) (JSONL); opened before seccomp; `/dev/fd/N` for a pre-opened descriptor |
 
 ## `dazai client`
 
@@ -37,6 +38,7 @@ Every flag, by command.
 | `--tool '<spec>'` | — | declare a tool (repeatable); see below |
 | `--arm` | off (dry-run) | enable the real wipe-and-exit |
 | `--grace N` | — | delay before the final wipe/exit after the trigger |
+| `--korg-sink PATH` | none | append non-secret [Korg lifecycle records](./korg.md) (JSONL); `/dev/fd/N` for a pre-opened descriptor |
 
 ### `--tool` spec
 

@@ -7,6 +7,7 @@
 
 use anyhow::{anyhow, bail, Context, Result};
 use goodnight::SecretBuffer;
+use kiroku::ReadKind;
 
 /// One configured tool.
 pub struct ToolDef {
@@ -59,6 +60,27 @@ impl ToolRegistry {
             ToolKind::Static { buf, len } => Action::Static(buf.as_slice()[..*len].to_vec()),
             ToolKind::Exec(cmd) => Action::Exec(cmd.clone()),
         })
+    }
+
+    /// The tool's 0-based position and kind, for Korg lifecycle records —
+    /// copies no secret and exposes neither the name nor the value.
+    pub fn describe(&self, name: &str) -> Option<(u32, ReadKind)> {
+        let index = self.tools.iter().position(|t| t.name == name)?;
+        let kind = match self.tools[index].kind {
+            ToolKind::Static { .. } => ReadKind::Static,
+            ToolKind::Exec(_) => ReadKind::Exec,
+        };
+        Some((u32::try_from(index).unwrap_or(u32::MAX), kind))
+    }
+
+    /// How many SecretBuffers [`ToolRegistry::wipe`] zeroizes.
+    pub fn static_count(&self) -> u32 {
+        let n = self
+            .tools
+            .iter()
+            .filter(|t| matches!(t.kind, ToolKind::Static { .. }))
+            .count();
+        u32::try_from(n).unwrap_or(u32::MAX)
     }
 
     /// Explicitly wipe every static value's SecretBuffer.

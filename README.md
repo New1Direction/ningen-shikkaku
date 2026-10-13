@@ -122,6 +122,16 @@ flowchart LR
     HB -. "drop / ping-timeout / panic signal" .-> D
 ```
 
+## Korg interop
+
+`dazai daemon` and `motokano` can feed [Korg](https://github.com/New1Direction/korg)'s
+tamper-evident ledger: `--korg-sink PATH` (or `/dev/fd/N` for a pre-opened
+descriptor) appends one Korg append-shape record per arm, session, read, wipe
+and kill step. Records carry only fixed-vocabulary fields and counters. Secret
+values, lengths, digests, tool names, arguments, paths and the environment are
+never recorded. Korg assigns sequence numbers, hashes and signatures on
+ingest. See [Korg lifecycle records](https://new1direction.github.io/ningen-shikkaku/reference/korg.html).
+
 ## Threat model
 
 daZai shrinks the *window* and the *surface* in which plaintext secrets are
@@ -168,9 +178,9 @@ ephemeral and session-bound, with every limitation stated up front.
 
 ## Verification
 
-- **66 tests** across the Rust workspace (secure memory, the panic policy, the
-  wire protocol, the MCP layer, the one-shot lifecycle) plus the **29-test**
-  Python reference.
+- **81 tests** across the Rust workspace (secure memory, the panic policy, the
+  wire protocol, the MCP layer, the one-shot lifecycle, the Korg lifecycle
+  contract) plus the **29-test** Python reference.
 - **Linux seccomp is validated on both architectures under the real
   `KillProcess` filter** — `aarch64` (locally) and `x86_64`
   ([CI](https://github.com/New1Direction/ningen-shikkaku/actions)) — where the daemon

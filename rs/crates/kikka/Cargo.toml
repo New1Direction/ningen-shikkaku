@@ -8,5 +8,6 @@ description = "Heartbeat listener + panic controller for dazai"
 
 [dependencies]
 goodnight.workspace = true
+kiroku.workspace = true
 anyhow.workspace = true
 signal-hook.workspace = true

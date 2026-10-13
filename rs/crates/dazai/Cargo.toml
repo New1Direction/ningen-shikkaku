@@ -16,11 +16,17 @@ goodnight.workspace = true
 kikka.workspace = true
 sienna.workspace = true
 kekkai.workspace = true
+kiroku.workspace = true
 rei.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 signal-hook.workspace = true
 tokio.workspace = true
+
+[dev-dependencies]
+base64 = "0.22"
+serde_json = "1"
+sha2 = "0.10"
 
 [features]
 # Enable on Linux to compile and apply the seccomp allowlist.

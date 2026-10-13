@@ -4,6 +4,7 @@
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
+use kiroku::Lifecycle;
 use rmcp::model::{
     CallToolRequestParam, CallToolResult, Content, ListToolsResult, PaginatedRequestParam,
     ServerCapabilities, ServerInfo, Tool,
@@ -32,7 +33,7 @@ impl OneshotServer {
     /// after the current response has been returned to rmcp for sending.
     fn trigger_exit(&self) {
         let ctx = Arc::clone(&self.exit);
-        std::thread::spawn(move || wipe_and_exit(&ctx));
+        std::thread::spawn(move || wipe_and_exit(&ctx, kiroku::Reason::CallsExhausted));
     }
 }
 
@@ -87,31 +88,56 @@ impl ServerHandler for OneshotServer {
         request: CallToolRequestParam,
         _context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
+        let name = request.name.as_ref();
+        let sink = self.exit.lifecycle.as_deref();
+        // Lifecycle records identify a tool by position + kind only; a call
+        // naming an unknown tool is not recorded (its name is caller input).
+        let record = |(tool, kind): (u32, kiroku::ReadKind), served: bool| {
+            kiroku::emit(sink, Lifecycle::Read { tool, kind, served });
+        };
+
         // Once an exit condition has fired, serve nothing more — otherwise the
         // client could keep re-reading the un-wiped secret during the
         // flush/grace window before the wipe runs.
         if self.exit.closed.load(Ordering::SeqCst) {
+            let described = {
+                let tools = self.exit.tools.lock().unwrap_or_else(|p| p.into_inner());
+                tools.describe(name)
+            };
+            if let Some(d) = described {
+                record(d, false);
+            }
             return Err(McpError::internal_error(
                 "motokano has fired its exit condition; no longer serving",
                 None,
             ));
         }
 
-        let name = request.name.as_ref();
         // Resolve the action without holding the registry lock across I/O.
-        let action = {
+        let (described, action) = {
             let tools = self.exit.tools.lock().unwrap_or_else(|p| p.into_inner());
-            tools.lookup(name)
+            (tools.describe(name), tools.lookup(name))
         };
-        let action = action
-            .ok_or_else(|| McpError::invalid_params(format!("unknown tool {name:?}"), None))?;
+        let (Some(described), Some(action)) = (described, action) else {
+            return Err(McpError::invalid_params(
+                format!("unknown tool {name:?}"),
+                None,
+            ));
+        };
 
         let output = match action {
             Action::Static(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
-            Action::Exec(cmd) => tools::run_command(&cmd)
-                .await
-                .map_err(|e| McpError::internal_error(e.to_string(), None))?,
+            Action::Exec(cmd) => match tools::run_command(&cmd).await {
+                Ok(out) => out,
+                Err(e) => {
+                    record(described, false);
+                    return Err(McpError::internal_error(e.to_string(), None));
+                }
+            },
         };
+        // Recorded before the counter can schedule the wipe, so the read
+        // always precedes the wipe in the sink.
+        record(described, true);
 
         // Count this completed call. If it satisfies the exit condition, close
         // serving SYNCHRONOUSLY (so the very next call is refused — stdio

@@ -31,6 +31,10 @@ Whichever fires first ends the process:
 The call counter is a single-fire `compare_exchange`, and a `closed` flag is set **synchronously** the instant the final call is accounted for. Any tool call arriving during the brief response-flush + grace window after exit fires is rejected — the secret cannot be served once the server has committed to dying. All paths funnel through one wipe routine guarded so it runs exactly once, ending in the buffer wipe and process exit.
 ```
 
+## Korg lifecycle records
+
+With `--korg-sink PATH`, motokano appends one non-secret record per session start, arm, read, wipe and exit to a sink [Korg](../reference/korg.md) ingests. A read is identified by the tool's position and kind (`static` / `exec`) and whether it was served. The tool's name, the value, the command and the output are never recorded.
+
 ## Demo
 
 ```bash

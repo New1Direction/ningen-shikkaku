@@ -18,6 +18,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use dazai::DazaiLink;
+use kiroku::{KillTarget, Lifecycle, Reason, Sink};
 use tools::ToolRegistry;
 
 /// Brief window allowing the final MCP response to flush to the client before
@@ -40,6 +41,8 @@ pub struct ExitCtx {
     /// further tool calls, so no secret is dispensed during the flush/grace
     /// window before the wipe runs.
     pub closed: Arc<AtomicBool>,
+    /// Optional Korg lifecycle sink (see `kiroku`).
+    pub lifecycle: Option<Arc<Sink>>,
 }
 
 /// The single wipe+exit path. Fires at most once — whichever exit condition
@@ -47,8 +50,9 @@ pub struct ExitCtx {
 ///
 /// Steps: (1) best-effort dazai UNREGISTER, (2) a brief flush window then the
 /// configured grace, (3) wipe all SecretBuffers, (4) exit — `raise(SIGKILL)`
-/// when armed, else a clean `exit(0)`.
-pub fn wipe_and_exit(ctx: &ExitCtx) -> ! {
+/// when armed, else a clean `exit(0)`. `reason` (the first trigger's) is
+/// recorded on the Korg lifecycle records for steps 3 and 4.
+pub fn wipe_and_exit(ctx: &ExitCtx, reason: Reason) -> ! {
     static EXITING: AtomicBool = AtomicBool::new(false);
     if EXITING.swap(true, Ordering::SeqCst) {
         // Another thread is already tearing the process down; park until it
@@ -73,14 +77,27 @@ pub fn wipe_and_exit(ctx: &ExitCtx) -> ! {
         std::thread::sleep(ctx.grace);
     }
     // 3. wipe all SecretBuffers (recover a poisoned lock so we still wipe).
-    {
+    let buffers = {
         let mut tools = ctx.tools.lock().unwrap_or_else(|p| p.into_inner());
         tools.wipe();
-    }
-    // 4. exit.
+        tools.static_count()
+    };
+    let sink = ctx.lifecycle.as_deref();
+    kiroku::emit(sink, Lifecycle::Wipe { reason, buffers });
+    // 4. exit (recorded first: nothing runs after the SIGKILL).
     if ctx.arm {
+        kiroku::emit(
+            sink,
+            Lifecycle::Kill {
+                reason,
+                target: KillTarget::SelfProcess,
+                count: 1,
+                executed: true,
+            },
+        );
         goodnight::raise_sigkill()
     } else {
+        kiroku::emit(sink, Lifecycle::SessionEnd { reason });
         std::process::exit(0)
     }
 }

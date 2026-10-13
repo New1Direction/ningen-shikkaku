@@ -9,7 +9,7 @@
 //! 2. `PR_SET_DUMPABLE=0` (Linux)
 //! 3. allocate + lock the secret buffers
 //! 4. spawn the LLM child (if `--exec`)
-//! 5. bind the UNIX socket
+//! 5. bind the UNIX socket (and, earlier, open the optional Korg lifecycle sink)
 //! 6. **apply seccomp** (Linux + `seccomp` feature) — after bind/alloc, before the loop
 //! 7. enter the accept/event loop
 
@@ -20,6 +20,7 @@ use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::rc::Rc;
+use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
@@ -86,6 +87,10 @@ struct DaemonArgs {
     /// Synthetic working-buffer size in bytes.
     #[arg(long, default_value_t = 4096)]
     size: usize,
+    /// Append non-secret Korg lifecycle records (JSONL) here. Opened before
+    /// seccomp; use /dev/fd/N for a descriptor the parent pre-opened.
+    #[arg(long = "korg-sink")]
+    korg_sink: Option<PathBuf>,
 }
 
 #[derive(Args)]
@@ -177,6 +182,18 @@ fn run_daemon(args: DaemonArgs) -> Result<()> {
         None
     };
 
+    // 0. Korg lifecycle sink: opening needs openat (+ an RNG read), both denied
+    //    by seccomp, so it happens now; afterwards each record is one write(2).
+    let lifecycle = match &args.korg_sink {
+        Some(path) => {
+            let sink = kiroku::Sink::open(path, kiroku::Component::Dazai)
+                .with_context(|| format!("opening --korg-sink {}", path.display()))?;
+            eprintln!("[dazai] korg lifecycle sink {}", path.display());
+            Some(Arc::new(sink))
+        }
+        None => None,
+    };
+
     // 1. RLIMIT_MEMLOCK
     match goodnight::try_raise_memlock_rlimit() {
         Ok(true) => eprintln!("[dazai] RLIMIT_MEMLOCK raised"),
@@ -224,6 +241,7 @@ fn run_daemon(args: DaemonArgs) -> Result<()> {
         armed: args.arm,
         grace,
         ping_timeout,
+        lifecycle,
     };
 
     let mut watchdog = Watchdog::new(config, Rc::clone(&buffers), kill);

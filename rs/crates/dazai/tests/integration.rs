@@ -453,3 +453,193 @@ fn client_subcommand_drop_triggers_daemon() {
     assert!(drain_stderr(&mut daemon).contains("WOULD SIGKILL"));
     let _ = std::fs::remove_file(&sock);
 }
+
+// ---- Korg lifecycle contract (`--korg-sink`) -------------------------------
+
+/// Read the sink, validate every record against the contract, and render each
+/// as a compact step string.
+fn sink_steps(path: &Path) -> (Vec<String>, String) {
+    let text = std::fs::read_to_string(path).expect("read sink");
+    let mut steps = Vec::new();
+    for line in text.split_inclusive('\n') {
+        kiroku::contract::validate(line).unwrap_or_else(|e| panic!("{e}: {line}"));
+        let v: serde_json::Value = serde_json::from_str(line).unwrap();
+        let (a, r) = (&v["args"], &v["result"]);
+        let s = |k: &str| a[k].as_str().unwrap().to_string();
+        steps.push(match v["tool_name"].as_str().unwrap() {
+            "ningen.session_start" => format!("session_start armed={}", a["armed"]),
+            "ningen.arm" => format!("arm via={}", s("via")),
+            "ningen.wipe" => format!("wipe {} buffers={}", s("reason"), a["buffers"]),
+            "ningen.kill" => format!(
+                "kill {} {} count={} executed={}",
+                s("target"),
+                s("reason"),
+                a["count"],
+                r["executed"]
+            ),
+            "ningen.session_end" => format!("session_end {}", s("reason")),
+            other => panic!("dazai must not emit {other}"),
+        });
+    }
+    (steps, text)
+}
+
+fn sessions(raw: &str) -> Vec<String> {
+    let mut out: Vec<String> = raw
+        .lines()
+        .map(|l| {
+            let v: serde_json::Value = serde_json::from_str(l).unwrap();
+            v["args"]["session"].as_str().unwrap().to_string()
+        })
+        .collect();
+    out.dedup();
+    out
+}
+
+/// What dazai holds or is configured with; none of it may reach the sink in
+/// any encoding or digest.
+fn assert_dazai_no_leak(raw: &str, extra: &[&str]) {
+    use base64::engine::general_purpose::STANDARD;
+    use base64::Engine;
+    use sha2::{Digest, Sha256};
+    let mut secrets = vec!["synthetic-key-material", "SYNTHETIC SECRET", "dazai-it-"];
+    secrets.extend_from_slice(extra);
+    for secret in secrets {
+        let hex: String = secret.bytes().map(|b| format!("{b:02x}")).collect();
+        let digest: String = Sha256::digest(secret.as_bytes())
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        for form in [secret.to_string(), hex, STANDARD.encode(secret), digest] {
+            assert!(!raw.contains(&form), "sink leaked {form:?} (of {secret:?})");
+        }
+    }
+}
+
+fn sink_path(tag: &str) -> PathBuf {
+    static N: AtomicU32 = AtomicU32::new(0);
+    let p = PathBuf::from(format!(
+        "/tmp/dazai-korg-{tag}-{}-{}.jsonl",
+        std::process::id(),
+        N.fetch_add(1, Ordering::SeqCst)
+    ));
+    let _ = std::fs::remove_file(&p);
+    p
+}
+
+#[test]
+fn korg_sink_on_preopened_fd_records_armed_kill_sequence_under_seccomp() {
+    // The parent opens fd 3; dazai only ever sees `/dev/fd/3`. Under
+    // `--features seccomp` every record is written after the filter is live:
+    // a denied syscall would end the daemon with SIGSYS, not SIGKILL.
+    let sock = unique_socket();
+    let sink = sink_path("fd");
+    let env_secret = format!("ENV-CANARY-{}", std::process::id());
+    let mut victim = spawn_victim();
+    let mut daemon = Command::new("sh")
+        .arg("-c")
+        .arg(r#"exec "$@" 3>>"$KORG_SINK""#)
+        .arg("sh")
+        .arg(BIN)
+        .args([
+            "daemon",
+            "--size",
+            "256",
+            "--korg-sink",
+            "/dev/fd/3",
+            "--socket",
+        ])
+        .arg(&sock)
+        .env("KORG_SINK", &sink)
+        .env("DAZAI_TEST_SECRET", &env_secret)
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn dazai via sh");
+    assert!(wait_for_socket(&sock));
+    assert!(control_req(&sock, &format!("REGISTER pid={}", victim.id())).contains("OK"));
+    assert!(control_req(&sock, "ARM").contains("OK"));
+    let mut hb = connect(&sock);
+    hb.write_all(b"HELLO 1\n").unwrap();
+    assert!(recv(&mut hb).contains("WELCOME"));
+
+    send_signal(daemon.id(), "USR2");
+    let status = daemon.wait().unwrap();
+    assert_eq!(
+        status.signal(),
+        Some(9),
+        "self-SIGKILL, not SIGSYS: {status:?}"
+    );
+    assert_eq!(victim.wait().unwrap().signal(), Some(9));
+
+    let (steps, raw) = sink_steps(&sink);
+    assert_eq!(
+        steps,
+        [
+            "session_start armed=false",
+            "arm via=control",
+            "kill registered hard_panic_signal count=1 executed=true",
+            "wipe hard_panic_signal buffers=2",
+            "kill self hard_panic_signal count=1 executed=true",
+        ]
+    );
+    assert_dazai_no_leak(&raw, &[&env_secret, "/dev/fd/3"]);
+    let _ = std::fs::remove_file(&sink);
+    let _ = std::fs::remove_file(&sock);
+}
+
+#[test]
+fn korg_sink_records_dry_run_trigger_then_clean_shutdown() {
+    let sink = sink_path("dry");
+    let sink_arg = sink.to_str().unwrap();
+
+    // Run 1: dry-run SIGUSR1 with a registered holder -> records what it
+    // WOULD have killed, kills nothing.
+    let sock = unique_socket();
+    let mut victim = spawn_victim();
+    let mut daemon = spawn_daemon(&sock, &["--korg-sink", sink_arg]);
+    assert!(wait_for_socket(&sock));
+    assert!(control_req(&sock, &format!("REGISTER pid={}", victim.id())).contains("OK"));
+    let mut hb = connect(&sock);
+    hb.write_all(b"HELLO 1\n").unwrap();
+    assert!(recv(&mut hb).contains("WELCOME"));
+    send_signal(daemon.id(), "USR1");
+    assert!(daemon.wait().unwrap().success());
+    assert!(
+        matches!(victim.try_wait(), Ok(None)),
+        "dry-run kills nobody"
+    );
+    let _ = victim.kill();
+    let _ = victim.wait();
+    drop(hb);
+
+    // Run 2 (same sink, appended): SIGTERM clean shutdown -> wipe, no kill.
+    let sock2 = unique_socket();
+    let mut daemon = spawn_daemon(&sock2, &["--korg-sink", sink_arg]);
+    assert!(wait_for_socket(&sock2));
+    let mut hb = connect(&sock2);
+    hb.write_all(b"HELLO 1\n").unwrap();
+    assert!(recv(&mut hb).contains("WELCOME"));
+    send_signal(daemon.id(), "TERM");
+    assert!(daemon.wait().unwrap().success());
+
+    let (steps, raw) = sink_steps(&sink);
+    assert_eq!(
+        steps,
+        [
+            "session_start armed=false",
+            "wipe panic_signal buffers=2",
+            "kill registered panic_signal count=1 executed=false",
+            "kill self panic_signal count=1 executed=false",
+            "session_end panic_signal",
+            "session_start armed=false",
+            "wipe shutdown buffers=2",
+            "session_end shutdown",
+        ]
+    );
+    assert_eq!(sessions(&raw).len(), 2, "one random session id per run");
+    assert_dazai_no_leak(&raw, &[]);
+    let _ = std::fs::remove_file(&sink);
+    let _ = std::fs::remove_file(&sock);
+    let _ = std::fs::remove_file(&sock2);
+}
