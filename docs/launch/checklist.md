@@ -21,6 +21,13 @@ posting anywhere.
   Repository access must include `New1Direction/homebrew-tap` AND
   Permissions → Contents = Read and write — or the publish job will fail
   again and the formulas will go stale.
+- [x] **v0.2.0 released 2026-10-13** (Korg lifecycle records, `--korg-sink`):
+  all 4 targets + installers via the Release workflow; MCPB bundle
+  `motokano-0.2.0.mcpb` built by hand (universal macOS binary via
+  `llvm-lipo`) and attached; formulas pushed to the tap **manually again** —
+  the publish job failed with `Bad credentials`: `HOMEBREW_TAP_TOKEN` is
+  expired or revoked. Replace it (fine-grained PAT, tap repo, Contents: read
+  and write) before v0.3.0.
 - [x] **Install test**: `brew install New1Direction/tap/{dazai,motokano}`
   verified 2026-06-11 — binaries 0.1.0 on PATH, burn demo passes against the
   brew-installed motokano.

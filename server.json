@@ -8,13 +8,13 @@
     "source": "github"
   },
   "websiteUrl": "https://new1direction.github.io/ningen-shikkaku/",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "packages": [
     {
       "registryType": "mcpb",
-      "identifier": "https://github.com/New1Direction/ningen-shikkaku/releases/download/v0.1.0/motokano-0.1.0.mcpb",
-      "version": "0.1.0",
-      "fileSha256": "d2b25898f41083f50a384bf3a68e328e35d41f589d6b276d6c884082fa335afc",
+      "identifier": "https://github.com/New1Direction/ningen-shikkaku/releases/download/v0.2.0/motokano-0.2.0.mcpb",
+      "version": "0.2.0",
+      "fileSha256": "b58e75ecfb5a0c50ba6eb96d7aab8b41c57c2b57d1636a2ec2b2119ad89805f9",
       "transport": {
         "type": "stdio"
       }
